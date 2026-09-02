@@ -1,0 +1,28 @@
+# secrets
+.env
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+
+# vscode (keep settings.json + extensions.json, drop personal state)
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# mysql docker volume (if bind-mounted)
+mysql_data/
+
+# os
+.DS_Store
+Thumbs.db
+
+# draw.io backups
+*.drawio.bkp
+*.drawio.dtmp
+
+# submission zip
+*.zip

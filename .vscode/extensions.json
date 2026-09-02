@@ -1,0 +1,12 @@
+{
+  "recommendations": [
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "ms-toolsai.jupyter",
+    "mtxr.sqltools",
+    "mtxr.sqltools-driver-mysql",
+    "hediet.vscode-drawio",
+    "ms-azuretools.vscode-docker",
+    "anthropic.claude-code"
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+  "python.terminal.activateEnvironment": true,
+  "jupyter.interactiveWindow.textEditor.executeSelection": true,
+  "jupyter.interactiveWindow.creationMode": "perFile",
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": ["."],
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.pytest_cache": true
+  },
+  "sqltools.connections": [
+    {
+      "name": "swish-mysql (docker)",
+      "driver": "MySQL",
+      "server": "127.0.0.1",
+      "port": 3306,
+      "database": "swish",
+      "username": "swish",
+      "askForPassword": true
+    }
+  ]
+}
