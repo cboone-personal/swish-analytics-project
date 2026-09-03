@@ -3,6 +3,7 @@
   "python.terminal.activateEnvironment": true,
   "jupyter.interactiveWindow.textEditor.executeSelection": true,
   "jupyter.interactiveWindow.creationMode": "perFile",
+  "jupyter.notebookFileRoot": "${workspaceFolder}",
   "python.testing.pytestEnabled": true,
   "python.testing.pytestArgs": ["."],
   "files.exclude": {

@@ -24,5 +24,8 @@ Thumbs.db
 *.drawio.bkp
 *.drawio.dtmp
 
+# generated html render of docs/plan.md (for VS Code Live Preview)
+docs/plan.html
+
 # submission zip
 *.zip

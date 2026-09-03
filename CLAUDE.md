@@ -14,8 +14,10 @@ Prompt: `docs/swish-de-take-home.pdf`. Step-by-step guide: `docs/plan.md`.
 2. **Never push.** Chris commits and pushes. Don't run `git commit` / `git push`
    unless explicitly asked in that message.
 3. **Match Chris's style.** Read his existing code before suggesting anything.
-   Pseudocode and signatures over finished blocks. If he asks "how would I write
-   X", show the shape and the gotchas, let him type it.
+   When he asks "how would I write X", show a concrete skeleton with the real
+   library calls named (not vague pseudocode like "cast int" — he found that
+   useless), plus the gotchas. He types it into the file himself. Never write
+   into `on_court.py` for him.
 4. **He develops function-by-function** in VS Code Interactive Window using
    `# %%` cells. Keep every function pure (DataFrame in → DataFrame/dict out) and
    independently runnable. No I/O outside `load()` and `write_mysql()`.
