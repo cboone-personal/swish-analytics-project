@@ -20,6 +20,9 @@ mysql_data/
 .DS_Store
 Thumbs.db
 
+# excel lock files (created while a workbook is open)
+~$*
+
 # draw.io backups
 *.drawio.bkp
 *.drawio.dtmp
