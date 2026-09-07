@@ -40,9 +40,9 @@ crunch and nothing in the deliverable breaks.
 | R11 | writeup: your decisions, why those tools, how it scales; end-to-end from ingest to serving; how the code knows when to run; storage strategy |
 
 **Where the difficulty actually is:** R3. Q2–Q4 opening lineups aren't in the
-data and have to be inferred (Phase 3.4). Everything else is plumbing.
+data and have to be inferred (Phase 3.3). Everything else is plumbing.
 
-**What's optional:** all of Phase 2 (understanding, not code), 3.4d, 4.4, 5.3.
+**What's optional:** all of Phase 2 (understanding, not code), 3.4, 4.5, and the tests in 5.3.
 Phase 2 exists so you can defend the algorithm in the follow-up interview, not
 because the PDF asks for it.
 
@@ -456,392 +456,420 @@ pbpp[pbpp.play_event == "Turnover"][["play_id", "sequence", "last_name", "play_t
 
 ---
 
-## Phase 3 — `on_court.py`: load → openers (≈2–3 hrs) [→ R1, R3]
+## Phase 3 — `on_court.ipynb`: load → openers (≈1 hr) [→ R1, R3]
 
-Create `on_court.py` at the repo root. Build top-down, one `# %%` section at a
-time. After each function: run its cell, call it, **look at the return value**
-before writing the next one. Folds from here on are **Hint** (which tools /
-what to watch for) and **Skeleton** (a concrete Python skeleton with the real
-pandas / mysql calls — type it, run it, make it yours). You write the file.
+You're developing in **`on_court.ipynb`**. Rules for this and the next two phases:
 
----
+- **One idea per cell.** A *define* cell holds one function. A *run* cell calls
+  it and ends with a bare expression so the notebook renders the result as a
+  table. Never define and run in the same cell.
+- **Every run cell has a "You should see."** If you don't see it, the **If not**
+  fold says what to check. Don't move on until it matches.
+- **Frames in, frames out.** No dict lookups, no row loops in this phase.
+- **Count cells end in `.reset_index(name="…")`** so the output is a normal
+  3-column table instead of a Series with tuple index (that's what the
+  `(np.int64(…), np.int64(…))` / `# 0` rendering was).
+- **Style:** yours. Black, type hints, one-line docstring, name the result
+  before you `return` it.
+- **The deliverable is still `on_court.py`.** At the end of Phase 5 you export
+  the notebook and add `main()`.
 
-### 3.1 Section 1 — imports + config [→ R1]
+### What Phase 3 produces
 
-- [ ] **Do:** Imports (`argparse`, `os`, `sys`, `pandas`, `mysql.connector`, `from dotenv import load_dotenv`). Call `load_dotenv()` at module level so `.env` is read on import. Define constants you'll reference by name instead of magic numbers: `DATA_DIR = "data"`, `SUB_IN = 1`, `SUB_OUT = 2`, `STARTING_LINEUP_PLAY_ID = 1`, `PLAYERS_PER_TEAM = 5`, `TECHNICAL = "Technical"`.
-**Why:** Constants make the algorithm readable in the writeup ("if `sequence == SUB_IN`" vs "if `sequence == 1`"), and one place to change if the feed's conventions differ.
+One DataFrame, **`openers`** — who was on the floor when each period started:
 
----
-
-### 3.2 Section 2 — `load()` [→ R1, T2]
-
-- [ ] **Do:** Write `load(data_dir=DATA_DIR)` returning `(pbp, pbp_players, rosters)`. Read the three files. For each frame, cast the id columns that are never NaN to `int`: `event_id, play_id, play_sequence, period` everywhere; `home_team_id, away_team_id, play_team_id` in `pbp`; `team_id, player_id` in `rosters`. In `pbp_players`, `player_id` and `team_id` *are* NaN on team-event rows — drop those rows (`player_id.notna()`) then cast. Sort every frame by `(event_id, play_id, play_sequence)` — `rosters` has no play columns, sort by `(event_id, team_id, player_id)`.
-**Why:** Float ids make dict keys and comparisons flaky (`2.0` vs `2`). Dropping NaN-player rows from `pbp_players` up front means Timeout / Start Period / End Period / team-rebound rows can't leak into your evidence later — one filter instead of five special cases. Sorting once here means every downstream loop can assume order.
-**Expect:** `pbp.shape == (1011, 30)`. `pbp_players.shape[0] == 1284` (1357 minus 73 NaN-player rows). `rosters.shape == (66, 12)`. `pbp.play_id.dtype` is `int64`.
-
-<details><summary>Hint</summary>
-
-`df[cols] = df[cols].astype(int)` casts several columns at once. `df.sort_values([...]).reset_index(drop=True)` so the index is clean. Return a tuple; call it as `pbp, pbpp, ros = load()`.
-
-</details>
-<details><summary>Skeleton</summary>
-
-```python
-ID_COLS_PBP  = ["event_id", "play_id", "play_sequence", "period",
-                "home_team_id", "away_team_id", "play_team_id"]
-ID_COLS_PBPP = ["event_id", "play_id", "play_sequence", "period", "player_id", "team_id"]
-ID_COLS_ROS  = ["event_id", "team_id", "player_id"]
-
-def load(data_dir: str = DATA_DIR):
-    pbp  = pd.read_excel(f"{data_dir}/pbp.xlsx")
-    pbpp = pd.read_excel(f"{data_dir}/pbp-players.xlsx")
-    ros  = pd.read_excel(f"{data_dir}/rosters.xlsx")
-
-    # team-event rows (timeouts, period start/end, team rebounds) have no player
-    pbpp = pbpp[pbpp.player_id.notna()].copy()
-
-    # ids load as float64 because other columns have NaN; make them real ints
-    pbp[ID_COLS_PBP]   = pbp[ID_COLS_PBP].astype(int)
-    pbpp[ID_COLS_PBPP] = pbpp[ID_COLS_PBPP].astype(int)
-    ros[ID_COLS_ROS]   = ros[ID_COLS_ROS].astype(int)
-    # NOTE: leave pbpp.sequence as float — the 20 Starting Lineup rows have NaN there.
-    #       1.0 == 1 is True in Python, so comparing to SUB_IN still works.
-
-    pbp  = pbp.sort_values(["event_id", "play_id", "play_sequence"]).reset_index(drop=True)
-    pbpp = pbpp.sort_values(["event_id", "play_id", "play_sequence"]).reset_index(drop=True)
-    ros  = ros.sort_values(["event_id", "team_id", "player_id"]).reset_index(drop=True)
-    return pbp, pbpp, ros
+```
+event_id  period  team_id  player_id
+ 1947160       1        2     280587
+ ...                                    80 rows = 2 games × 4 periods × 2 teams × 5 players
 ```
 
-`.copy()` after the boolean filter avoids pandas' `SettingWithCopyWarning` on the next line.
+Two functions build it:
 
-</details>
-
----
-
-### 3.3 Section 3 — lookups [→ R3 — Trap 1 fix]
-
-- [ ] **Do (a):** `player_team_map(rosters) -> dict[(event_id, player_id), team_id]`. One line from `rosters`.
-- [ ] **Do (b):** `home_team_map(pbp) -> dict[event_id, home_team_id]`. One line from `pbp` (drop duplicates on `event_id` first).
-- [ ] **Do (c):** `game_teams(rosters) -> dict[event_id, set[team_id]]` — the two team ids per game. You'll iterate over these in 3.4.
-**Why:** (a) is Trap 1's fix: the single source of truth for who plays for whom. (b) feeds the `is_home` column in Phase 4.2. (c) saves you from hard-coding "two teams" and from deriving teams off `pbp_players` (which is exactly what Trap 1 says not to trust).
-**Expect:** `len(team_map) == 66`. `team_map[(1947312, 845564)] == 21` (Booker → Phoenix). `home[1947160] == 2`, `home[1947312] == 21`. `game_teams[1947160] == {2, 9}`.
-
-<details><summary>Hint</summary>
-
-`dict(zip(zip(ros.event_id, ros.player_id), ros.team_id))` or `ros.set_index([...]).team_id.to_dict()`. For (c), `ros.groupby("event_id").team_id.apply(set).to_dict()`.
-
-</details>
-<details><summary>Skeleton</summary>
-
-```python
-def player_team_map(ros: pd.DataFrame) -> dict[tuple[int, int], int]:
-    """(event_id, player_id) -> team_id. Rosters are the only source of truth for this."""
-    return ros.set_index(["event_id", "player_id"])["team_id"].to_dict()
-
-def home_team_map(pbp: pd.DataFrame) -> dict[int, int]:
-    """event_id -> home_team_id."""
-    return pbp.drop_duplicates("event_id").set_index("event_id")["home_team_id"].to_dict()
-
-def game_teams(ros: pd.DataFrame) -> dict[int, set[int]]:
-    """event_id -> {team_id, team_id}."""
-    return ros.groupby("event_id")["team_id"].apply(set).to_dict()
+```
+pbpp ──► attach_roster_team() ──► pbpp with the ROSTER's team_id     (Trap 1, fixed once)
+                │
+                └──► period_openers() ──► openers                    (one rule, all periods)
 ```
 
-</details>
+**The rule:** use the feed's explicit lineup where it exists; infer only where it
+doesn't. Q1 comes straight from the Starting Lineup rows at `play_id 1`. For
+Q2+, drop technical fouls and look at the **first row** each player appears in:
+if that row is him being subbed **in**, he started on the bench; anything else —
+a shot, a rebound, a foul, being subbed **out** — means he was already on the floor.
+
+(The inference rule also reproduces Q1 exactly when run on Q1 — that's your
+Phase 3.4 self-test — but trusting the explicit rows is the safer default.)
+
+### Clean-up first
+
+- [ ] Delete `player_team_map()`, `home_team_map()`, `game_teams()`, and any `starting_five()` / `inferred_openers()` you've typed, plus their run cells. Two functions replace all of them.
 
 ---
 
-### 3.4 Section 4 — `period_openers()` — **the hard part** [→ R3 — the core requirement]
+### 3.1 — `load()` [→ R1, T2] — **done**
 
-Signature: `period_openers(pbp_players, team_map, game_teams) -> dict[(event_id, period, team_id), set[player_id]]`. Build it in four sub-steps; run after each.
+Matches. `pbpp.sequence` stays float on purpose (the 20 Starting Lineup rows are `NaN` there); leave it out of `ID_COLS_PBPP`. `1.0 == SUB_IN` is `True`.
 
-- [ ] **3.4a — Period 1 from the Starting Lineup rows.** [→ R3]
-**Do:** For each game, take `pbp_players` rows where `play_id == STARTING_LINEUP_PLAY_ID`. Group the `player_id`s by team using `team_map` (not `pbpp.team_id`). Store as `result[(event_id, 1, team_id)] = set_of_5`.
-**Why:** Ground truth, handed to you. Also becomes the oracle for 3.4d.
-**Expect:** 4 keys, each a set of 5.
-
-- [ ] **3.4b — Periods ≥ 2: evidence scan.** [→ R3]
-**Do:** For each `(event_id, period)` with `period >= 2`: iterate its `pbp_players` rows **in order** (they're sorted from `load()`). Keep two per-team sets: `subbed_in` and `openers`. For each row, resolve `team = team_map[(event_id, player_id)]`. Then:
-  - if it's a Substitution with `sequence == SUB_IN` → add player to `subbed_in[team]`
-  - if it's a Substitution with `sequence == SUB_OUT` and player **not in** `subbed_in[team]` → add to `openers[team]` (he left before he arrived, so he must have started)
-  - otherwise (any other event) if player **not in** `subbed_in[team]` → add to `openers[team]` (he did something before being brought in, so he must have started)
-
-  Store `result[(event_id, period, team)] = openers[team]`.
-**Why:** No subs at period breaks (2.5), so the opening five leaves only two fingerprints: getting subbed out, or appearing in a play. Order matters — a player subbed in at 8:00 who then rebounds at 6:00 must *not* count, hence the `subbed_in` check.
-**Expect:** 12 more keys. **Two of them will have 6 players** — Houston P2 and Phoenix P4. That's expected at this sub-step. Print `{k: len(v) for k, v in result.items()}` and confirm you see the two 6s.
-
-- [ ] **3.4c — Apply the exclusion.** [→ R3]
-**Do:** In the "otherwise" branch, skip rows where `play_detail == TECHNICAL`. Re-run.
-**Why:** Trap 2. (Trap 1 is already handled because you resolved team via `team_map` in 3.4b — if you'd used `pbpp.team_id`, Booker would have landed in Houston's set.)
-**Expect:** **All 16 keys have exactly 5.** If any is still 6: you're using `pbpp.team_id` somewhere, or the technical filter isn't reached. If any is 4: you're filtering out a legitimate event type — check you're not excluding all fouls, or all `sequence=3` rows.
-
-- [ ] **3.4d — Self-test on Period 1.** [→ optional — evidence for R9]
-**Do:** Run the 3.4b/c logic on period 1 as well (temporarily, or as a separate flag) and compare its answer to 3.4a's Starting Lineup sets. They should be identical for all 4 team-periods.
-**Why:** This proves the inference rule recovers ground truth where ground truth exists. It's one paragraph in the walkthrough and it's the strongest evidence you can offer that the Q2–Q4 answers are right. Keep the code — it becomes a test in 4.4.
-**Expect:** 4/4 match.
-
-<details><summary>Hint</summary>
-
-Iterate with `for row in group.itertuples(index=False)` — much faster than `iterrows` and gives attribute access (`row.player_id`). `groupby(["event_id", "period"])` yields `((eid, per), frame)` pairs. Use `dict.setdefault(team, set())` or initialise both sets for every team in `game_teams[event_id]` before the loop so a team with zero evidence still gets a key (it'll be an empty set — and your validation in 4.3 will catch it). Sanity-print after each sub-step: `{k: len(v) for k, v in result.items()}`.
-
-Spot-check vs what the data says: game `1947160` P2 BOS opener includes Baynes and Smart; GS includes Thompson and West.
-
-</details>
-<details><summary>Skeleton</summary>
+- [ ] **Run cell:**
 
 ```python
-def period_openers(pbpp: pd.DataFrame, team_map: dict, teams_by_game: dict) -> dict:
-    """(event_id, period, team_id) -> set of 5 player_ids on the floor when the period started."""
-    result = {}
-
-    for (eid, per), grp in pbpp.groupby(["event_id", "period"], sort=True):
-        teams = teams_by_game[eid]
-
-        # ---- 3.4a: period 1 is given to us ----
-        if per == 1:
-            starters = grp[grp.play_id == STARTING_LINEUP_PLAY_ID]
-            for t in teams:
-                result[(eid, 1, t)] = {int(p) for p in starters.player_id
-                                       if team_map[(eid, int(p))] == t}
-            continue
-
-        # ---- 3.4b: periods 2+ must be inferred ----
-        subbed_in = {t: set() for t in teams}
-        openers   = {t: set() for t in teams}
-
-        for row in grp.itertuples(index=False):          # grp is already sorted by play_id, play_sequence
-            pid = int(row.player_id)
-            t   = team_map[(eid, pid)]                    # TRAP 1: never row.team_id
-
-            if row.play_event == "Substitution":
-                if row.sequence == SUB_IN:
-                    subbed_in[t].add(pid)
-                elif row.sequence == SUB_OUT and pid not in subbed_in[t]:
-                    openers[t].add(pid)                   # left before arriving -> was a starter
-            else:
-                if row.play_detail == TECHNICAL:          # TRAP 2 (3.4c): techs can come from the bench
-                    continue
-                if pid not in subbed_in[t]:
-                    openers[t].add(pid)                   # did something before arriving -> was a starter
-
-        for t in teams:
-            result[(eid, per, t)] = openers[t]
-
-    return result
+pbp, pbpp, ros = load(DATA_DIR)
+pbp.shape, pbpp.shape, ros.shape
 ```
 
-Run it, then in a cell: `{k: len(v) for k, v in openers.items()}` — 16 keys, all `5`. For 3.4b-before-3.4c, comment out the `TECHNICAL` `continue` and watch two of them become `6`.
-
-For 3.4d, the P1 self-test: temporarily change `if per == 1:` to `if False:` (or add a `use_starting_lineup=True` parameter) and compare the four P1 sets to the Starting Lineup sets.
-
-</details>
-
-**✅ Done when:** 16 keys, every set has exactly 5, and the P1 self-test matches 4/4.
+**You should see:** `((1011, 30), (1284, 38), (66, 12))`.
 
 ---
 
-## Phase 4 — `on_court.py`: walk → long → validate (≈1.5 hrs) [→ R2, R3]
+### 3.2 — `attach_roster_team()` [→ R3 — Trap 1 fix]
 
-### 4.1 Section 5 — `walk_plays()` [→ R2, R3]
+- [ ] **Do:** Join the roster's `team_id` onto `pbpp` by `(event_id, player_id)` and **overwrite** `pbpp.team_id` with it. Return the frame.
+**Why:** `pbpp.team_id` is wrong on one row (Booker, play 149, tagged HOU). Rosters are the truth. Fix it once here and everything downstream can trust `pbpp.team_id`.
 
-Signature: `walk_plays(pbp, pbp_players, openers, game_teams) -> dict[(event_id, play_id), dict[team_id, frozenset[player_id]]]`. Build in three sub-steps.
-
-- [ ] **4.1a — The play list.** [→ R2]
-**Do:** From `pbp`, take `event_id, play_id, period`, `drop_duplicates()`, sort by `(event_id, play_id)`. This is the list you'll emit one lineup for.
-**Why:** `pbp` has 1,011 rows but 993 plays (2.3). Deduping here is what makes "play_id 1 appears once" true.
-**Expect:** 993 rows. 489 for game `1947160`, 504 for `1947312`.
-
-- [ ] **4.1b — Index the substitutions by play.** [→ R3]
-**Do:** From `pbp_players`, take Substitution rows. Build `subs_by_play: dict[(event_id, play_id), list[(team_id, in_player, out_player)]]`. Resolve `team_id` via `team_map`. Pair the IN and OUT rows of each play (they share `play_id`; `sequence` tells you which is which).
-**Why:** In the walk you want O(1) "does this play have a sub?" — not a filter per play.
-**Expect:** 104 keys, every list has exactly one `(team, in, out)` tuple (no play has two subs in this data — but don't assume it; a list handles the general case).
-
-- [ ] **4.1c — The walk.** [→ R3]
-**Do:** For each game, loop over its plays in order. Keep `on_court: dict[team_id, set[player_id]]`. Whenever `period` differs from the previous play's period (including the very first play), **replace** `on_court` with fresh copies of `openers[(event_id, period, team)]` for each team. If `(event_id, play_id)` is in `subs_by_play`, for each `(team, in, out)`: `on_court[team].remove(out)` then `.add(in)`. Then store `result[(event_id, play_id)] = {team: frozenset(players) for ...}`.
-**Why:** Single ordered pass — this is the O(P) core. The period reset is what makes Q2–Q4 work: you don't carry Q1's closers into Q2, you start Q2 from the back-solved openers. Storing a `frozenset` (or `set(...)` copy) per play is mandatory: if you store the live `set`, every play points at the same mutating object and your whole table shows the final lineup.
-**Expect:** `len(result) == 993`. Every value has 2 teams × exactly 5 players. **`.remove(out)` should never raise `KeyError`** — if it does, your model has a player leaving who wasn't there. Let it raise during dev (it's your bug detector); print the `play_id` and `play_text` and go look. In the final version catch it, log the play, and re-raise.
-
-Decision to write down for the walkthrough: **a substitution takes effect on its own play row** (you apply the sub, *then* emit). Sub rows never score, so it's analytically inert — but say you chose it.
-
-<details><summary>Hint</summary>
-
-Loop over the play list with `itertuples`. Track `prev_period = None` and compare. Copy openers with `{t: set(openers[(eid, per, t)]) for t in teams}` — `set(...)` makes a copy; assigning the dict value directly does not. For the sub pairing, `groupby(["event_id", "play_id"])` on the sub rows and pick `row.sequence == SUB_IN` / `SUB_OUT` inside each group.
-
-</details>
 <details><summary>Skeleton</summary>
 
 ```python
-def index_subs(pbpp: pd.DataFrame, team_map: dict) -> dict:
-    """(event_id, play_id) -> [(team_id, player_in, player_out), ...]"""
-    subs = pbpp[pbpp.play_event == "Substitution"]
-    out = {}
-    for (eid, pid), g in subs.groupby(["event_id", "play_id"]):
-        p_in  = int(g.loc[g.sequence == SUB_IN,  "player_id"].iloc[0])
-        p_out = int(g.loc[g.sequence == SUB_OUT, "player_id"].iloc[0])
-        out.setdefault((eid, pid), []).append((team_map[(eid, p_in)], p_in, p_out))
+def attach_roster_team(pbpp: pd.DataFrame, ros: pd.DataFrame) -> pd.DataFrame:
+    """Replace pbpp.team_id with the roster's team_id (pbpp's is wrong on 1 row)."""
+
+    roster_team = ros.set_index(["event_id", "player_id"])["team_id"].rename("roster_team_id")
+    out = pbpp.join(roster_team, on=["event_id", "player_id"])
+    out["team_id"] = out.pop("roster_team_id").astype(int)
     return out
-
-
-def walk_plays(pbp: pd.DataFrame, subs_by_play: dict, openers: dict, teams_by_game: dict) -> dict:
-    """(event_id, play_id) -> {team_id: frozenset of 5 player_ids}"""
-    plays = (pbp[["event_id", "play_id", "period"]]
-             .drop_duplicates()
-             .sort_values(["event_id", "play_id"]))
-
-    result = {}
-    for eid, gplays in plays.groupby("event_id"):
-        teams = teams_by_game[eid]
-        on_court, prev_period = None, None
-
-        for row in gplays.itertuples(index=False):
-            if row.period != prev_period:                      # new period -> reset to that period's openers
-                on_court = {t: set(openers[(eid, row.period, t)]) for t in teams}   # set(...) = COPY
-                prev_period = row.period
-
-            for team, p_in, p_out in subs_by_play.get((eid, row.play_id), []):
-                on_court[team].remove(p_out)                   # KeyError here = your model is wrong; go look at this play
-                on_court[team].add(p_in)
-
-            result[(eid, row.play_id)] = {t: frozenset(s) for t, s in on_court.items()}   # frozenset = snapshot
-
-    return result
 ```
 
-`set(openers[...])` and `frozenset(s)` are both copies. Drop either one and every play will show the same final lineup.
+`join(..., on=[...])` lines a 2-level-indexed Series up against two columns. `pop` pulls the joined column out and deletes it in one move.
+
+</details>
+
+- [ ] **Run cell:**
+
+```python
+pbpp = attach_roster_team(pbpp, ros)
+print("unmatched:", pbpp.team_id.isna().sum())
+pbpp.loc[pbpp.play_id == 149, ["player_id", "last_name", "team_abbr", "team_id"]]
+```
+
+**You should see:** `unmatched: 0`, and Booker's row with `team_abbr = Hou` but `team_id = 21`. That's the bad row, corrected.
+
+<details><summary>If not</summary>
+
+- `KeyError` inside the join → `ros` ids still float; `load()` should have cast them.
+- `unmatched > 0` → a `pbpp` player isn't on any roster: `pbpp[pbpp.team_id.isna()][["player_id","last_name"]]`. (In this data: nobody.)
+- Booker still `team_id = 10` → you didn't reassign. `pbpp = attach_roster_team(pbpp, ros)`.
 
 </details>
 
 ---
 
-### 4.2 Section 6 — `to_long()` [→ R2, R3, T1 — the table design]
+### 3.3 — `period_openers()` [→ R3 — the core requirement]
 
-- [ ] **Do:** `to_long(on_court, plays, home_map) -> DataFrame` with columns `event_id, play_id, player_id, team_id, period, is_home`. Loop over `on_court`; for each play, for each team, for each player, append one row. `period` comes from a `{(event_id, play_id): period}` lookup built off the play list; `is_home = int(team_id == home_map[event_id])`. Build the frame from a list of tuples once at the end — not `df.append` in a loop.
-**Why:** This is the table grain (10 rows per play). Denormalised `team_id / period / is_home` are deliberate: the "points while on court" query needs one join to `pbp` instead of two.
-**Expect:** `df.shape == (9930, 6)`. `df.groupby(["event_id", "play_id"]).size().eq(10).all()` is `True`. `df.is_home.mean() == 0.5`.
+- [ ] **Do (a) — Q1, given.** `starters` = `pbpp` rows where `play_id == STARTING_LINEUP_PLAY_ID`, the 4 opener columns. 20 rows.
+- [ ] **Do (b) — Q2+, inferred.** `evidence` = `pbpp` rows with `period >= 2` and `play_detail != TECHNICAL`. `first_row` = `evidence.drop_duplicates(subset=OPENER_COLS, keep="first")` — `load()` sorted by play order, so "first" = earliest. `checked_in` = that row is a `Substitution` with `sequence == SUB_IN`. `inferred` = rows where it isn't.
+- [ ] **Do (c) — concat** `starters` and `inferred`. That's `openers`.
+**Why:** `play_id` increases through the game, so "first row in the period" is "first thing he did." Deciding on that one row is the entire inference. Q1 doesn't need it because the feed hands you the answer.
 
-<details><summary>Hint</summary>
+<details><summary>Skeleton</summary>
 
-Accumulate `rows.append((eid, pid, player, team, period, is_home))`, then `pd.DataFrame(rows, columns=[...])`. Sort by `(event_id, play_id, team_id, player_id)` so the output is deterministic — makes diffs and the SQL dump stable between runs.
+```python
+OPENER_COLS = ["event_id", "period", "team_id", "player_id"]
+
+
+def period_openers(pbpp: pd.DataFrame) -> pd.DataFrame:
+    """Q1 from the Starting Lineup rows; Q2+ inferred from each player's first appearance."""
+
+    starters = pbpp.loc[pbpp.play_id == STARTING_LINEUP_PLAY_ID, OPENER_COLS]
+
+    evidence = pbpp[(pbpp.period >= 2) & (pbpp.play_detail != TECHNICAL)]
+    first_row = evidence.drop_duplicates(subset=OPENER_COLS, keep="first")
+    checked_in = (first_row.play_event == "Substitution") & (first_row.sequence == SUB_IN)
+    inferred = first_row.loc[~checked_in, OPENER_COLS]
+
+    openers = pd.concat([starters, inferred], ignore_index=True)
+    return openers
+```
+
+Two other shapes of the same inference (explicit first-seen/first-in columns; a per-group scan) are in `docs/phase3-options.md`.
 
 </details>
+
+- [ ] **Run cell 1 — look before you trust.** Build `first_row` inline and inspect one team-period:
+
+```python
+evidence = pbpp[(pbpp.period >= 2) & (pbpp.play_detail != TECHNICAL)]
+first_row = evidence.drop_duplicates(subset=OPENER_COLS, keep="first")
+bos_q2 = first_row[(first_row.event_id == 1947160) & (first_row.period == 2) & (first_row.team_id == 2)]
+bos_q2[["player_id", "last_name", "play_id", "play_event", "sequence", "play_text"]]
+```
+
+**You should see:** ~8 rows. Baynes — defensive rebound at play 118 → opener. Smart — missed shot at 119 → opener. Morris — "Substitution: Marcus Morris in for Daniel Theis" at 129, `sequence 1.0` → bench. Theis — same play 129, `sequence 2.0` (out) → opener.
+
+- [ ] **Run cell 2 — the counts:**
+
+```python
+openers = period_openers(pbpp)
+counts = openers.groupby(["event_id", "period", "team_id"]).size().reset_index(name="players")
+print("groups:", len(counts), "| all 5:", (counts.players == 5).all(), "| rows:", len(openers))
+counts
+```
+
+**You should see:** `groups: 16 | all 5: True | rows: 80` and a clean 16-row, 4-column table. **`openers` is Phase 3's output.**
+
+- [ ] **Run cell 3 — human-readable view** (for you and for the walkthrough; not part of the script):
+
+```python
+def openers_wide(openers: pd.DataFrame, ros: pd.DataFrame) -> pd.DataFrame:
+    """One row per (game, team); one column per period listing the five who opened it."""
+
+    named = openers.merge(ros[["event_id", "player_id", "name"]], on=["event_id", "player_id"])
+    named["label"] = named.name + " (" + named.player_id.astype(str) + ")"
+    wide = (
+        named.sort_values("name")
+        .groupby(["event_id", "team_id", "period"])["label"]
+        .agg(", ".join)
+        .unstack("period")
+        .rename(columns=lambda p: f"Q{p}")
+        .rename_axis(columns=None)
+        .reset_index()
+    )
+    return wide
+
+
+pd.set_option("display.max_colwidth", None)
+openers_wide(openers, ros)
+```
+
+**You should see:** 4 rows × `event_id, team_id, Q1, Q2, Q3, Q4`. Every Q3 equals its Q1 (starters return after halftime). HOU Q2 has no Booker; PHO Q4 has no Warren.
+
+<details><summary>If not</summary>
+
+- **A `6`** → a trap leaked. Houston P2 → Trap 1: `attach_roster_team` didn't run or you didn't reassign `pbpp`. Phoenix P4 → Trap 2: `play_detail != TECHNICAL` is missing.
+- **A `4`** → you're excluding real evidence. Only technicals go; every other event and every `sequence` value counts.
+- **Q1 wrong** → `starters` filter is off; should be exactly 20 rows before the concat.
+- **Q2+ wrong order / wrong "first"** → `pbpp` isn't sorted. `load()` must `sort_values(["event_id", "play_id", "play_sequence"])`.
+- To see *who* is in a suspicious group: `openers.merge(ros[["event_id", "player_id", "name"]])`, filter.
+
+</details>
+
+---
+
+### 3.4 — Self-test on period 1 [→ optional — evidence for R9]
+
+- [ ] **Do:** Run the *inference half* on Q1 and compare it to the *given half*. Easiest: temporarily change `period >= 2` to `period >= 1` (or add a `min_period=2` parameter), take the inferred rows where `period == 1`, and `.equals()` them against `starters`. Sort both by `OPENER_COLS`, `reset_index(drop=True)` first.
+**Why:** In Q1 the feed tells you the answer. If the inference reproduces it, that's direct evidence the Q2–Q4 answers (where there's no key) are right. Say in the walkthrough that the Starting Lineup rows themselves count as "first appearance" here, so also run it with `play_id != 1` excluded from the evidence — it still matches, and that's the honest version of the test.
+
+**You should see:** `True`, both ways.
+
+**✅ Done when:** `openers` has 80 rows in 16 groups of 5.
+
+---
+
+## Phase 4 — `on_court.ipynb`: subs → walk → validate (≈1.5 hrs) [→ R2, R3]
+
+### 4.1 — `sub_events()` [→ R3]
+
+- [ ] **Do:** Substitution rows of `pbpp`, pivoted so each sub is **one row**: `event_id, play_id, period, team_id, player_in, player_out`. Index the pivot on `(event_id, play_id, period, team_id)`, columns from `sequence`, values `player_id`. Rename `1 → player_in`, `2 → player_out`.
+**Why:** The walk wants "for this play: which team, who in, who out" as a single row. `period` is in there so 4.2 can filter subs to one team-period without joining back to `pbp`.
+
+<details><summary>Skeleton</summary>
+
+```python
+def sub_events(pbpp: pd.DataFrame) -> pd.DataFrame:
+    """One row per substitution: event_id, play_id, period, team_id, player_in, player_out."""
+
+    subs = pbpp[pbpp.play_event == "Substitution"]
+    pivoted = (
+        subs.pivot_table(
+            index=["event_id", "play_id", "period", "team_id"],
+            columns="sequence",
+            values="player_id",
+            aggfunc="first",
+        )
+        .rename(columns={SUB_IN: "player_in", SUB_OUT: "player_out"})
+        .astype(int)
+        .reset_index()
+    )
+    pivoted.columns.name = None
+    return pivoted[["event_id", "play_id", "period", "team_id", "player_in", "player_out"]]
+```
+
+Pivot column labels come out as `1.0`/`2.0` (sequence is float); `rename` with the int constants still matches because `1 == 1.0`. `columns.name = None` clears the stray "sequence" label the pivot leaves behind.
+
+</details>
+
+- [ ] **Run cell:**
+
+```python
+subs = sub_events(pbpp)
+print(subs.shape)
+subs.head()
+```
+
+**You should see:** `(104, 6)`. First row: game `1947160`, play `41`, period `1`, team `2`, `player_in = 697132` (Smart), `player_out = 937647` (Tatum).
+
+<details><summary>If not</summary>
+
+- Rows ≠ 104 → `team_id` in the index split a sub in two, meaning the IN and OUT rows have different `team_id`s. `attach_roster_team` didn't run.
+- `ValueError` on `astype(int)` → a NaN in `player_in`/`player_out` (a sub with one row). `subs.groupby(["event_id","play_id"]).size().value_counts()` should be `{2: 104}`.
+- `AttributeError: 'DataFrame' object has no attribute 'period'` later in 4.2 → `period` isn't in the pivot index.
+
+</details>
+
+---
+
+### 4.2 — `add_is_home()` [→ T1 — table design]
+
+- [ ] **Do:** Small helper the walk calls at the end. Take the long frame (5 columns, no `is_home` yet) and `pbp`. Merge `pbp[["event_id", "home_team_id"]].drop_duplicates()` on `event_id`; `is_home = (team_id == home_team_id).astype(int)`. Select `OUT_COLS`, sort, reset index.
+**Why:** Keeps `is_home` a frame operation (no `home_team_map` dict), and keeps `walk_plays` about one thing — the lineup replay. Define it **before** `walk_plays` or you'll get `NameError`.
+
 <details><summary>Skeleton</summary>
 
 ```python
 OUT_COLS = ["event_id", "play_id", "player_id", "team_id", "period", "is_home"]
 
-def to_long(on_court: dict, pbp: pd.DataFrame, home_map: dict) -> pd.DataFrame:
-    period_of = (pbp[["event_id", "play_id", "period"]].drop_duplicates()
-                 .set_index(["event_id", "play_id"])["period"].to_dict())
-    rows = []
-    for (eid, pid), teams in on_court.items():
-        for t, players in teams.items():
-            for p in players:
-                rows.append((eid, pid, p, t, period_of[(eid, pid)], int(t == home_map[eid])))
-    return (pd.DataFrame(rows, columns=OUT_COLS)
-            .sort_values(["event_id", "play_id", "team_id", "player_id"])
-            .reset_index(drop=True))
+
+def add_is_home(long: pd.DataFrame, pbp: pd.DataFrame) -> pd.DataFrame:
+    """Attach is_home by comparing team_id to the game's home_team_id."""
+
+    home = pbp[["event_id", "home_team_id"]].drop_duplicates()
+    out = long.merge(home, on="event_id")
+    out["is_home"] = (out.team_id == out.home_team_id).astype(int)
+    result = out[OUT_COLS].sort_values(OUT_COLS[:4]).reset_index(drop=True)
+    return result
 ```
 
 </details>
 
+No run cell of its own — it's exercised by 4.3.
+
 ---
 
-### 4.3 Section 7 — `validate()` [→ R2, R3 — proven in code]
+### 4.3 — `walk_plays()` — produces the final table [→ R2, R3, T1]
 
-- [ ] **Do:** `validate(df, pbp, rosters) -> None`. Raise `AssertionError` with a **specific message** (which game, which play, what count) on the first failure. Five checks:
-  1. **Coverage** — per game, `set(pbp.play_id) == set(df.play_id)`. Message: which play_ids are missing / extra.
-  2. **Ten per play** — every `(event_id, play_id)` has exactly 10 rows. Message: the offending play_ids and their counts.
-  3. **Five per team per play** — every `(event_id, play_id, team_id)` has exactly 5.
-  4. **On the roster** — every `(event_id, player_id)` in `df` exists in `rosters`.
-  5. **No duplicates** — `(event_id, play_id, player_id)` is unique.
-  On success, print one line: `validate: 5/5 checks passed, 9930 rows, 993 plays, 2 games`.
-**Why:** These are the prompt's requirements ("each play_id represented", "10 players") turned into code. Also your safety net when you refactor.
-**Expect:** Passes. Then **break it on purpose** — `df.drop(df.index[0])` — and confirm it fails with a readable message. Restore.
+The one loop in the project. Each team's five is independent of the other team's, so replay **one team's period at a time**: start from its five, apply its subs in order, write down who's on the floor at every play. State is a single `set`.
 
-<details><summary>Hint</summary>
+- [ ] **Do (a) — the play list.** `pbp[["event_id", "play_id", "period"]].drop_duplicates()`, sorted by `(event_id, play_id)`.
+**Expect:** 993 rows (`pbp` has 1,011 because `play_id 1` is 10 rows).
 
-`groupby([...]).size()` then `.ne(10)` / `.ne(5)` and `.any()`; index the failures out for the message. Set difference for coverage: `missing = pbp_ids - df_ids`. For roster membership, build a set of `(event_id, player_id)` tuples from `rosters` and check with `MultiIndex.isin` or a merge with `indicator=True`.
+- [ ] **Do (b) — the loop.** `for (eid, per, team), five in openers.groupby([...])` — `openers` hands you one five at a time. `on_court = set(five.player_id)`. Filter `subs` to that game/period/team and `set_index("play_id")`; filter `plays` to that game/period. Walk the plays: if the play is in `team_subs.index`, `remove(player_out)` then `add(player_in)`. Then `rows.extend(...)` — 5 tuples `(event_id, play_id, player_id, team_id, period)`.
+- [ ] **Do (c) — the frame.** `pd.DataFrame(rows, columns=OUT_COLS[:-1])` then `add_is_home(long, pbp)`.
+**Why:** Looping per team-period means the period reset is the top of the loop (no `prev_period` tracking), there's one set instead of a dict of sets, and no lookups to build — three boolean filters do it. Iterating the play list 16 times costs microseconds.
 
-</details>
+**Write this down for the walkthrough:** a sub takes effect **on its own play row** (apply, then record). Sub rows never score, so it's analytically inert — but say you chose it. Three other shapes of this function (per game, per period, a no-loop stints join) are in `docs/phase4-options.md`.
+
 <details><summary>Skeleton</summary>
 
 ```python
-def validate(df: pd.DataFrame, pbp: pd.DataFrame, ros: pd.DataFrame) -> None:
-    # 1. coverage: every play_id in pbp appears in df, per game
+def walk_plays(pbp: pd.DataFrame, openers: pd.DataFrame, subs: pd.DataFrame) -> pd.DataFrame:
+    """One row per (play, on-court player): each team's period replayed from its five."""
+
+    plays = pbp[["event_id", "play_id", "period"]].drop_duplicates().sort_values(["event_id", "play_id"])
+
+    rows = []
+    for (eid, per, team), five in openers.groupby(["event_id", "period", "team_id"]):
+        on_court = set(five.player_id)
+        team_subs = subs[(subs.event_id == eid) & (subs.period == per) & (subs.team_id == team)].set_index("play_id")
+        period_plays = plays[(plays.event_id == eid) & (plays.period == per)]
+
+        for play in period_plays.itertuples(index=False):
+            if play.play_id in team_subs.index:
+                on_court.remove(team_subs.at[play.play_id, "player_out"])
+                on_court.add(team_subs.at[play.play_id, "player_in"])
+
+            rows.extend((eid, play.play_id, p, team, per) for p in on_court)
+
+    long = pd.DataFrame(rows, columns=OUT_COLS[:-1])
+    return add_is_home(long, pbp)
+```
+
+`team_subs.at[...]` assumes one sub per team per play — true in this data. If a feed ever had two, `.loc[play.play_id]` returns a frame and you'd loop it.
+
+</details>
+
+- [ ] **Run cell:**
+
+```python
+on_court = walk_plays(pbp, openers, subs)
+print(on_court.shape, "| 10 per play:", (on_court.groupby(["event_id", "play_id"]).size() == 10).all())
+on_court[(on_court.event_id == 1947160) & on_court.play_id.between(40, 42)].merge(ros[["event_id", "player_id", "name"]])
+```
+
+**You should see:** `(9930, 6) | 10 per play: True`, then 30 rows for plays 40–42 in which Jayson Tatum is on court at play 40 and Marcus Smart replaces him from play 41 onward.
+
+<details><summary>If not</summary>
+
+- **`NameError: add_is_home`** → define it first (4.2).
+- **`AttributeError: ... 'period'`** on `subs` → 4.1's pivot index needs `period`.
+- **`KeyError` at `.remove(...)`** → the walk thinks someone left who wasn't on. Print `eid, per, team, play.play_id` just before the `remove`, look that play up in `pbpp`. Almost always: that team-period's five is wrong (back to 3.3's counts).
+- **Rows < 9930** → a team-period missing from `openers`; there should be 16 groups.
+- **Rows > 9930 or 15 per play** → `team_subs` matched the other team's sub. Check the `team_id` filter.
+
+</details>
+
+---
+
+### 4.4 — `validate()` [→ R2, R3 — proven in code]
+
+- [ ] **Do:** One function, five `assert`s, each with a message naming the offender; print one summary line on success.
+  1. per game, `set(pbp.play_id) == set(on_court.play_id)`
+  2. every `(event_id, play_id)` has 10 rows
+  3. every `(event_id, play_id, team_id)` has 5 rows
+  4. every `(event_id, player_id)` in the output exists in `ros`
+  5. `(event_id, play_id, player_id)` has no duplicates
+**Why:** R2 and R3 as executable checks, and your regression net when you refactor.
+
+<details><summary>Skeleton</summary>
+
+```python
+def validate(on_court: pd.DataFrame, pbp: pd.DataFrame, ros: pd.DataFrame) -> None:
+    """Raise AssertionError on the first broken invariant."""
+
     for eid, g in pbp.groupby("event_id"):
-        missing = set(g.play_id) - set(df.loc[df.event_id == eid, "play_id"])
+        missing = set(g.play_id) - set(on_court.loc[on_court.event_id == eid, "play_id"])
         assert not missing, f"game {eid}: {len(missing)} play_ids missing, e.g. {sorted(missing)[:5]}"
 
-    # 2. exactly 10 per play
-    per_play = df.groupby(["event_id", "play_id"]).size()
-    bad = per_play[per_play != 10]
-    assert bad.empty, f"{len(bad)} plays without 10 players:\n{bad.head()}"
+    per_play = on_court.groupby(["event_id", "play_id"]).size()
+    assert (per_play == 10).all(), f"plays without 10 players:\n{per_play[per_play != 10].head()}"
 
-    # 3. exactly 5 per team per play
-    per_team = df.groupby(["event_id", "play_id", "team_id"]).size()
-    bad = per_team[per_team != 5]
-    assert bad.empty, f"{len(bad)} team-plays without 5 players:\n{bad.head()}"
+    per_team = on_court.groupby(["event_id", "play_id", "team_id"]).size()
+    assert (per_team == 5).all(), f"team-plays without 5 players:\n{per_team[per_team != 5].head()}"
 
-    # 4. everyone is on that game's roster
-    on_roster = df.merge(ros[["event_id", "player_id"]], how="left", indicator=True)
-    bad = on_roster[on_roster._merge == "left_only"]
-    assert bad.empty, f"{len(bad)} rows with players not on the roster:\n{bad.head()}"
+    on_roster = on_court.merge(ros[["event_id", "player_id"]], how="left", indicator=True)
+    assert (on_roster._merge == "both").all(), f"players not on roster:\n{on_roster[on_roster._merge != 'both'].head()}"
 
-    # 5. no duplicate (event, play, player)
-    dupes = df.duplicated(["event_id", "play_id", "player_id"]).sum()
-    assert dupes == 0, f"{dupes} duplicate rows"
+    dupes = on_court.duplicated(["event_id", "play_id", "player_id"]).sum()
+    assert dupes == 0, f"{dupes} duplicate (event, play, player) rows"
 
-    print(f"validate: 5/5 checks passed — {len(df)} rows, {len(per_play)} plays, {df.event_id.nunique()} games")
+    print(f"validate: 5/5 passed — {len(on_court)} rows, {len(per_play)} plays, {on_court.event_id.nunique()} games")
 ```
 
 </details>
 
----
-
-### 4.4 `test_on_court.py` (≈30 min) [→ optional — credibility]
-
-- [ ] **Do:** Create `test_on_court.py` next to the script. `from on_court import load, player_team_map, ..., period_openers, walk_plays, to_long, validate`. A module-level fixture (`@pytest.fixture(scope="module")`) that calls `load()` once. Then 5–6 tests:
-  - `test_team_map_puts_booker_on_phoenix` — `team_map[(1947312, 845564)] == 21`
-  - `test_openers_all_five` — 16 keys, every `len == 5`
-  - `test_openers_recover_period_one_starters` — the 3.4d self-test
-  - `test_walk_covers_every_play` — 993 keys, each 2 teams × 5
-  - `test_long_shape` — 9930 rows, 10 per play
-  - `test_walk_applies_sub` — a **hand-built** tiny frame: 3 plays, one sub, known answer. Tests the loop logic without the real data.
-**Why:** The prompt doesn't demand tests; a small suite that runs in 3 s is cheap credibility, and the hand-built case is the only one that isolates the sub logic.
-**Expect:** `pytest -q` → all green, under 10 s.
-
-<details><summary>Hint</summary>
-
-For the hand-built case, build `pbp` and `pbpp` DataFrames with the minimum columns your functions touch, plus a tiny `openers` dict — you don't need all 30 columns. If `load()` is slow to import, the module-scoped fixture means it runs once per `pytest` invocation.
-
-</details>
-
-**✅ Done when:** `validate()` passes on the real frame, fails loudly on a broken one, and `pytest -q` is green.
+- [ ] **Run cell:** `validate(on_court, pbp, ros)` → the summary line.
+- [ ] **Break it on purpose:** `validate(on_court.drop(index=0), pbp, ros)` → `AssertionError` from check 2 naming the play. That's what a reviewer sees if the data ever goes bad.
 
 ---
 
-## Phase 5 — MySQL write + dump + your own analysis (≈1.5 hrs) [→ R4–R8, T1]
+### 4.5 — `test_on_court.py` [→ optional — credibility]
 
-### 5.1 Section 8 — `write_mysql()` [→ R4, R5, R7]
+Defer until the functions live in `on_court.py` (Phase 5.3).
 
-- [ ] **5.1a — Connection.** [→ R7] **Do:** `get_conn()` returns `mysql.connector.connect(host=, port=, user=, password=, database=)` with every value from `os.environ[...]` (the names in `.env.example`). No defaults for password. Cast port to `int`.
-**Why:** "Remove any private connection parameters" — there are none in the code to remove.
+**✅ Done when:** `validate(on_court, pbp, ros)` prints `5/5 passed — 9930 rows, 993 plays, 2 games`.
 
-- [ ] **5.1b — DDL.** [→ R4] **Do:** Module-level `DDL = """CREATE TABLE IF NOT EXISTS pbp_players_on_court (...)"""` — exactly the schema in `CLAUDE.md`: 6 data columns + `updated_at`, composite PK `(event_id, play_id, player_id)`, two secondary indexes.
-**Why:** `IF NOT EXISTS` makes first run and every later run the same code path.
+---
 
-- [ ] **5.1c — The write.** [→ R4, R5] **Do:** `write_mysql(df, conn)`. Open a cursor, execute the DDL. Then **per game**: `DELETE FROM pbp_players_on_court WHERE event_id = %s`, then `executemany(INSERT ... VALUES (%s,%s,%s,%s,%s,%s), rows)` where `rows` is a list of tuples of **plain Python ints**. One `conn.commit()` after all games. Wrap in `try / except: conn.rollback(); raise`. Return the row count written.
-**Why:** Delete-then-insert per game makes a rerun produce *exactly* the source — no orphans if a play was corrected away upstream (an upsert would leave them). Single commit = atomic across games. This is the "run it a second time, it updates" requirement, and the rollback is what makes it safe.
-**Expect:** Returns 4890 for one game, 9930 for both.
+## Phase 5 — MySQL write, script, dump, your own analysis (≈2 hrs) [→ R4–R8, T1]
 
-**Gotcha you will hit:** mysql-connector rejects numpy integer types — `TypeError: Failed processing format-parameters; Python 'int64' cannot be converted to a MySQL type`. Convert every value with `int()` when building tuples. `df.astype(object)` before `.itertuples()` is not enough on its own — cast explicitly.
+### 5.1 — `get_conn()` + `write_mysql()` [→ R4, R5, R7]
 
-<details><summary>Hint</summary>
+- [ ] **Do (a):** `get_conn()` — `mysql.connector.connect(...)` with `host, port, user, password, database` all from `os.environ` (names from `.env.example`). `int()` the port.
+- [ ] **Do (b):** `DDL` string — the `CREATE TABLE IF NOT EXISTS` from `CLAUDE.md`, verbatim. `INSERT_SQL` string with six `%s`.
+- [ ] **Do (c):** `write_mysql(on_court, conn) -> int`. Cursor. Execute DDL. **Per game:** `DELETE ... WHERE event_id = %s`, then `executemany(INSERT_SQL, rows)` where `rows` is a list of tuples of **Python `int`s**. One `commit()` at the end. `try/except → rollback(); raise`. Return rows written.
+**Why:** Delete-then-insert per game = a rerun makes the table *equal* the source, orphans included (an upsert wouldn't). One commit = all-or-nothing. That's R5.
 
-`rows = [tuple(int(v) for v in r) for r in df[COLS].itertuples(index=False, name=None)]`. `executemany` sends ~5k rows in one round trip on this connector. Use `with conn.cursor() as cur:` if your connector version supports it; otherwise `cur.close()` in `finally`.
+**Gotcha you will hit:** `TypeError: Failed processing format-parameters; Python 'int64' cannot be converted to a MySQL type`. numpy ints. Convert each value with `int()`.
 
-</details>
 <details><summary>Skeleton</summary>
 
 ```python
@@ -864,28 +892,33 @@ INSERT INTO pbp_players_on_court (event_id, play_id, player_id, team_id, period,
 VALUES (%s, %s, %s, %s, %s, %s)
 """
 
+
 def get_conn():
-    return mysql.connector.connect(
+    """MySQL connection from .env — nothing hard-coded."""
+
+    conn = mysql.connector.connect(
         host=os.environ["MYSQL_HOST"],
         port=int(os.environ["MYSQL_PORT"]),
         user=os.environ["MYSQL_USER"],
         password=os.environ["MYSQL_PASSWORD"],
         database=os.environ["MYSQL_DATABASE"],
     )
+    return conn
 
-def write_mysql(df: pd.DataFrame, conn) -> int:
+
+def write_mysql(on_court: pd.DataFrame, conn) -> int:
+    """Replace each game's rows atomically. Returns rows written."""
+
     cur = conn.cursor()
     try:
         cur.execute(DDL)
         written = 0
-        for eid in sorted(df.event_id.unique()):
-            g = df[df.event_id == eid]
+        for eid, g in on_court.groupby("event_id"):
             cur.execute("DELETE FROM pbp_players_on_court WHERE event_id = %s", (int(eid),))
-            # mysql-connector rejects numpy ints -> convert every value with int()
             rows = [tuple(int(v) for v in r) for r in g[OUT_COLS].itertuples(index=False, name=None)]
             cur.executemany(INSERT_SQL, rows)
             written += len(rows)
-        conn.commit()                                 # one commit: all games or none
+        conn.commit()
         return written
     except Exception:
         conn.rollback()
@@ -896,25 +929,56 @@ def write_mysql(df: pd.DataFrame, conn) -> int:
 
 </details>
 
----
+- [ ] **Run cell** (Docker up — `docker compose ps` says healthy):
 
-### 5.2 Section 9 — `main()` + argparse [→ R6, R7]
+```python
+conn = get_conn()
+n = write_mysql(on_court, conn)
+conn.close()
+n
+```
 
-- [ ] **Do:** `argparse` with `--game` (required; `"all"` or an integer event_id), `--validate` (flag), `--no-db` (flag — build and validate, skip the write; handy in dev). `main()`: `load()`; if `--game` is an id, filter all three frames to it and exit with a clear message if the id isn't in `pbp`; build lookups → `period_openers` → `walk_plays` → `to_long`; `validate` if asked; `write_mysql` unless `--no-db`; print a one-line summary. Guard with `if __name__ == "__main__": sys.exit(main())`.
-**Why:** The prompt's "run for one game or all" requirement. `--no-db` lets you iterate without Docker running.
+**You should see:** `9930`. Then in the terminal:
 
-- [ ] **Run the sequence and record what you see** (you'll paste it into the walkthrough):
-  1. `python on_court.py --game 1947160` → then in the mysql shell: `SELECT COUNT(*) FROM pbp_players_on_court;` → **4890**
-  2. `python on_court.py --game all` → count → **9930**
-  3. `python on_court.py --game all` **again** → count still **9930**, not 19860. Idempotency proof.
-  4. `python on_court.py --game 999` → clean one-line error, exit code 1, no stack trace.
-  5. `python on_court.py --game all --validate` → `validate: 5/5 checks passed ...`
+```bash
+docker exec -it swish-mysql mysql -u swish -p swish -e "SELECT event_id, COUNT(*) FROM pbp_players_on_court GROUP BY event_id;"
+```
 
-<details><summary>Hint</summary>
+→ `1947160 | 4890`, `1947312 | 5040`.
 
-`parser.add_argument("--game", required=True)` then `if args.game != "all": eid = int(args.game)`. Filter with `pbp[pbp.event_id == eid]` etc. — and don't forget to filter `rosters` too or `game_teams` will still have both games. `return 0` / `return 1` from `main()` and let `sys.exit` carry it.
+- [ ] **Run the cell again.** Still `9930`, and the SQL counts don't double. **That's R5.** Screenshot or paste both outputs — they go in the walkthrough.
+
+<details><summary>If not</summary>
+
+- `InterfaceError: 2003 Can't connect` → Docker isn't up, or `.env` port ≠ compose port. `docker compose ps`.
+- `ProgrammingError: 1045 Access denied` → `.env` password ≠ what the container was *created* with. If you changed `.env` after first `up`, `docker compose down -v` then `up -d` (wipes the volume — fine, the script rebuilds everything).
+- `TypeError ... int64` → the `int(v)` conversion is missing.
+- `KeyError: 'MYSQL_HOST'` → `load_dotenv()` didn't find `.env`. Notebook cwd is the repo root (check `os.getcwd()`); `.env` must be there.
 
 </details>
+
+---
+
+### 5.2 — `sql/validation.sql`: points while on court [→ T1 — their tip]
+
+- [ ] **Do (a) — get `pbp` into MySQL so you can join.** In the notebook, one throwaway cell using the same pattern as `write_mysql`: `CREATE TABLE IF NOT EXISTS pbp (event_id INT, play_id INT, play_sequence INT, period TINYINT, play_team_id INT, points_scored INT NULL, play_event VARCHAR(40), play_text TEXT, PRIMARY KEY (event_id, play_id, play_sequence))`, `DELETE`, `executemany`. `points_scored` has NaN → convert to `None` (`int(v) if pd.notna(v) else None`). This is a dev convenience; say so in the walkthrough.
+- [ ] **Do (b) — write the two queries** into `sql/validation.sql`:
+  1. **Per player:** join `pbp_players_on_court oc` ⟂ `pbp p` on `(event_id, play_id)`; `SUM(CASE WHEN p.play_team_id = oc.team_id THEN p.points_scored ELSE 0 END) AS pts_for`, same with `<>` for `pts_against`, `COUNT(DISTINCT p.play_id) AS plays`; group by `event_id, team_id, player_id`.
+  2. **Reconciliation:** per `(event_id, team_id)`, `SUM(pts_for)` from query 1 must equal **5 ×** the team's `SUM(points_scored)` in `pbp`. Show both and the difference.
+**Why:** The PDF's one tip. Query 2 is a proof — five players share every point, so if any lineup is wrong the 5× identity breaks.
+- [ ] **Run** with SQLTools (`Ctrl+E Ctrl+E` on the file) or `docker exec -it swish-mysql mysql -u swish -p swish < sql/validation.sql` from Git Bash.
+
+**You should see:** difference `0` for all four team-games. Paste the table into the walkthrough.
+
+---
+
+### 5.3 — Move the notebook into `on_court.py` [→ R1, R6, R7]
+
+The deliverable is a script. Do this once, now that everything works.
+
+- [ ] **Do (a):** In VS Code, notebook toolbar → `...` → **Export** → **Python Script**. Save over `on_court.py`. Then clean it: delete the run cells (anything that's not an `import`, a constant, a function, or the DDL/INSERT strings), delete the `# %%` comments if you like, keep the function order.
+- [ ] **Do (b):** Add `main()` at the bottom — `argparse` with `--game` (required, `"all"` or an event_id), `--validate`, `--no-db`. Load → filter to one game if asked (all three frames; error cleanly if the id isn't in `pbp`) → `attach_roster_team` → `openers` → `subs` → `walk_plays` → `validate` if asked → `write_mysql` unless `--no-db` → print one summary line. `if __name__ == "__main__": sys.exit(main())`.
+
 <details><summary>Skeleton</summary>
 
 ```python
@@ -922,32 +986,31 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Derive the 10 players on court for every play.")
     ap.add_argument("--game", required=True, help='an event_id, or "all"')
     ap.add_argument("--validate", action="store_true", help="run integrity checks before writing")
-    ap.add_argument("--no-db", action="store_true", help="build + validate only; skip MySQL")
+    ap.add_argument("--no-db", action="store_true", help="build and validate only; skip MySQL")
     args = ap.parse_args()
 
-    pbp, pbpp, ros = load()
-
+    pbp, pbpp, ros = load(DATA_DIR)
     if args.game != "all":
         eid = int(args.game)
         if eid not in set(pbp.event_id):
             print(f"error: event_id {eid} not found in pbp", file=sys.stderr)
             return 1
-        pbp, pbpp, ros = (pbp[pbp.event_id == eid], pbpp[pbpp.event_id == eid], ros[ros.event_id == eid])
+        pbp, pbpp, ros = pbp[pbp.event_id == eid], pbpp[pbpp.event_id == eid], ros[ros.event_id == eid]
 
-    team_map = player_team_map(ros)
-    home_map = home_team_map(pbp)
-    teams    = game_teams(ros)
-    openers  = period_openers(pbpp, team_map, teams)
-    subs     = index_subs(pbpp, team_map)
-    on_court = walk_plays(pbp, subs, openers, teams)
-    df       = to_long(on_court, pbp, home_map)
+    pbpp = attach_roster_team(pbpp, ros)
+    openers = period_openers(pbpp)
+    subs = sub_events(pbpp)
+    on_court = walk_plays(pbp, openers, subs)
 
     if args.validate:
-        validate(df, pbp, ros)
-
+        validate(on_court, pbp, ros)
     if not args.no_db:
-        n = write_mysql(df, get_conn())
-        print(f"wrote {n} rows for {df.event_id.nunique()} game(s)")
+        conn = get_conn()
+        try:
+            n = write_mysql(on_court, conn)
+        finally:
+            conn.close()
+        print(f"wrote {n} rows for {on_court.event_id.nunique()} game(s)")
     return 0
 
 
@@ -957,26 +1020,36 @@ if __name__ == "__main__":
 
 </details>
 
+- [ ] **Run the sequence from the terminal and record every output** (all five go in the walkthrough):
+
+```bash
+python on_court.py --game 1947160
+```
+→ `wrote 4890 rows for 1 game(s)`
+```bash
+python on_court.py --game all --validate
+```
+→ `validate: 5/5 passed ...` then `wrote 9930 rows for 2 game(s)`
+```bash
+python on_court.py --game all
+```
+→ `wrote 9930 ...` again; SQL count still 9930 — **idempotent**
+```bash
+python on_court.py --game 999
+```
+→ `error: event_id 999 not found in pbp`, exit code 1, no traceback
+```bash
+python on_court.py --game all --no-db --validate
+```
+→ validate passes, nothing written — proves the script runs without a DB
+
+- [ ] **`test_on_court.py`** (optional, 20 min now that imports work): `from on_court import *`; module-scoped fixture calling `load(DATA_DIR)`; tests: Booker → 21; `openers` 16 groups of 5; P1 self-test; `walk_plays` → 9930; a hand-built 3-play frame with one sub. `pytest -q`.
+
 ---
 
-### 5.3 `sql/validation.sql` — the "do your own calculations" tip [→ T1 — their tip; optional but recommended]
+### 5.4 — The dump deliverable [→ R8]
 
-- [ ] **Do (a):** Get `pbp` into MySQL so you can join to it. Simplest: add a `--load-source` flag to `on_court.py` that writes `pbp`, `pbp_players`, `rosters` into same-named tables with the same executemany pattern from 5.1 (`CREATE TABLE IF NOT EXISTS`, then `DELETE`/`INSERT` per game). Only the columns you need: for `pbp` at least `event_id, play_id, play_sequence, period, play_team_id, points_scored, play_event, play_text`. Say in the walkthrough it's a dev convenience, not part of the deliverable table.
-- [ ] **Do (b):** Write `sql/validation.sql`. Query 1: **team points scored while each player was on court** — join `pbp_players_on_court oc` to `pbp p` on `(event_id, play_id)`, sum `points_scored` where `p.play_team_id = oc.team_id` as `pts_for`, where `<>` as `pts_against`, `COUNT(DISTINCT p.play_id)` as `plays_on_court`, grouped by `event_id, team_id, player_id`. Query 2: **the reconciliation** — per `(event_id, team_id)`, `SUM(pts_for)` from query 1 should equal `5 ×` the team's total `SUM(points_scored)` from `pbp` (five players share every point). Put both side by side with the difference.
-**Why:** The prompt literally suggests this. Query 2 is a proof: if lineups were wrong (a 4 or 6 somewhere, or the wrong player), the 5× identity breaks. Paste the numbers into the walkthrough.
-**Expect:** Query 2 difference = 0 for all 4 team-games. If not zero, a lineup has the wrong count somewhere — `validate()` should already have caught it; if `validate` passes and this doesn't, your `play_team_id` join or `points_scored` NaN handling is off.
-
-<details><summary>Hint</summary>
-
-`SUM(CASE WHEN p.play_team_id = oc.team_id THEN p.points_scored ELSE 0 END)`. `points_scored` has NaN in the source — write it as `NULL` and `SUM` ignores it, or `fillna(0)` before loading. Run the file with SQLTools (`Ctrl+E Ctrl+E`) or `docker exec -it swish-mysql mysql -u swish -p swish` and paste.
-
-</details>
-
----
-
-### 5.4 The dump deliverable [→ R8]
-
-- [ ] **Do:** Dump inside the container, then copy the file out — this sidesteps PowerShell's redirect-encoding problems entirely:
+Dump inside the container, copy the file out — avoids PowerShell's redirect-encoding problem:
 
 ```bash
 docker exec swish-mysql sh -c "mysqldump -u root -p\$MYSQL_ROOT_PASSWORD swish pbp_players_on_court --result-file=/tmp/dump.sql"
@@ -985,17 +1058,16 @@ docker exec swish-mysql sh -c "mysqldump -u root -p\$MYSQL_ROOT_PASSWORD swish p
 docker cp swish-mysql:/tmp/dump.sql sql/pbp_players_on_court.sql
 ```
 
-- [ ] Open `sql/pbp_players_on_court.sql`. It should have one `CREATE TABLE` and a handful of large `INSERT INTO ... VALUES (...),(...)` statements. Roughly 400–600 KB.
-- [ ] **Prove it restores.** In the mysql shell `CREATE DATABASE swish_check;`, then:
+- [ ] Open it: one `CREATE TABLE`, a few big `INSERT INTO ... VALUES (...),(...)` statements, ~400–600 KB.
+- [ ] **Prove it restores:** `docker exec -it swish-mysql mysql -u root -p -e "CREATE DATABASE swish_check;"`, then
 
 ```bash
 docker exec swish-mysql sh -c "mysql -u root -p\$MYSQL_ROOT_PASSWORD swish_check < /tmp/dump.sql"
 ```
 
-then `SELECT COUNT(*) FROM swish_check.pbp_players_on_court;` → **9930**. `DROP DATABASE swish_check;` after.
-**Why:** A dump that doesn't restore is worth nothing to the reviewer. Thirty seconds to verify.
+then `SELECT COUNT(*) FROM swish_check.pbp_players_on_court;` → `9930`. `DROP DATABASE swish_check;`.
 
-**✅ Done when:** rerun is idempotent (9930 twice), dump restores to 9930, reconciliation difference is 0.
+**✅ Done when:** the five terminal runs behave as listed, the dump restores to 9930, and the reconciliation difference is 0.
 
 ---
 
