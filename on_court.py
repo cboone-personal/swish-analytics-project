@@ -1,4 +1,5 @@
-# %% setup
+# %%
+
 import argparse
 import os
 import sys
@@ -10,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-# %% constants
+# %%
 
 DATA_DIR = "data"
 SUB_IN = 1
@@ -19,7 +20,8 @@ STARTING_LINEUP_PLAY_ID = 1
 PLAYERS_PER_TEAM = 5
 TECHNICAL = "Technical"
 
-# %% load function
+
+# %%
 
 ID_COLS_PBP = [
     "event_id",
@@ -41,7 +43,9 @@ ID_COLS_PBPP = [
 ID_COLS_ROS = ["event_id", "team_id", "player_id"]
 
 
-def load(data_dir):
+def load(data_dir: str = DATA_DIR) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Read the three xlsx files, cast ids to int, sort by play"""
+
     pbp = pd.read_excel(f"{data_dir}/pbp.xlsx")
     pbpp = pd.read_excel(f"{data_dir}/pbp-players.xlsx")
     ros = pd.read_excel(f"{data_dir}/rosters.xlsx")
@@ -63,86 +67,340 @@ def load(data_dir):
 
 
 # %%
-pbp, pbpp, ros = load(DATA_DIR)
+def attach_roster_team(pbpp: pd.DataFrame, ros: pd.DataFrame) -> pd.DataFrame:
+    """Overwrite pbpp team_id with the roster team_id"""
 
-# %% lookups
-
-
-def player_team_map(ros: pd.DataFrame) -> dict[tuple[int, int], int]:
-    """(event_id, player_id) -> team_id"""
-
-    ptm = ros.set_index(["event_id", "player_id"])["team_id"].to_dict()
-    return ptm
-
-
-def home_team_map(pbp: pd.DataFrame) -> dict[int, int]:
-    """event_id -> home_team_id."""
-
-    htm = (
-        pbp.drop_duplicates("event_id").set_index("event_id")["home_team_id"].to_dict()
+    roster_team = ros.set_index(["event_id", "player_id"])["team_id"].rename(
+        "roster_team_id"
     )
-    return htm
-
-
-def game_teams(ros: pd.DataFrame) -> dict[int, set[int]]:
-    """event_id -> {team_id, team_id}."""
-
-    gt = ros.groupby("event_id")["team_id"].apply(set).to_dict()
-    return gt
+    out = pbpp.join(roster_team, on=["event_id", "player_id"])
+    out["team_id"] = out.pop("roster_team_id").astype(int)
+    return out
 
 
 # %%
-player_team = player_team_map(ros)
-home_team = home_team_map(pbp)
-game_team_set = game_teams(ros)
+OPENER_COLS = ["event_id", "period", "team_id", "player_id"]
+
+
+def period_openers(pbpp: pd.DataFrame) -> pd.DataFrame:
+    """Five on the floor at the start of each period"""
+
+    starters = pbpp.loc[pbpp.play_id == STARTING_LINEUP_PLAY_ID, OPENER_COLS]
+
+    evidence = pbpp[(pbpp.period >= 2) & (pbpp.play_detail != TECHNICAL)]
+    first_row = evidence.drop_duplicates(subset=OPENER_COLS, keep="first")
+    checked_in = (first_row.play_event == "Substitution") & (
+        first_row.sequence == SUB_IN
+    )
+    inferred = first_row.loc[~checked_in, OPENER_COLS]
+
+    openers = pd.concat([starters, inferred], ignore_index=True)
+    return openers
+
+
 # %%
+def sub_events(pbpp: pd.DataFrame) -> pd.DataFrame:
+    """One row per sub with player_in and player_out"""
+
+    subs = pbpp[pbpp.play_event == "Substitution"]
+    pivoted = (
+        subs.pivot_table(
+            index=["event_id", "play_id", "period", "team_id"],
+            columns="sequence",
+            values="player_id",
+            aggfunc="first",
+        )
+        .rename(columns={SUB_IN: "player_in", SUB_OUT: "player_out"})
+        .astype(int)
+        .reset_index()
+    )
+    pivoted.columns.name = None
+    return pivoted[
+        ["event_id", "play_id", "period", "team_id", "player_in", "player_out"]
+    ]
 
 
-def period_openers(pbpp: pd.DataFrame, team_map: dict, teams_by_game: dict) -> dict:
-    """(event_id, period, team_id) -> set of 5 player_ids on the floor when the period started."""
-    result = {}
+# %%
+OUT_COLS = ["event_id", "play_id", "player_id", "team_id", "period", "is_home"]
 
-    for (eid, per), grp in pbpp.groupby(["event_id", "period"], sort=True):
-        teams = teams_by_game[eid]
 
-        # ---- 3.4a: period 1 is given to us ----
-        if per == 1:
-            starters = grp[grp.play_id == STARTING_LINEUP_PLAY_ID]
-            for t in teams:
-                result[(eid, 1, t)] = {
-                    int(p) for p in starters.player_id if team_map[(eid, int(p))] == t
-                }
-            continue
+def add_is_home(long: pd.DataFrame, pbp: pd.DataFrame) -> pd.DataFrame:
+    """Add is_home from pbp home_team_id"""
 
-        # ---- 3.4b: periods 2+ must be inferred ----
-        subbed_in = {t: set() for t in teams}
-        openers = {t: set() for t in teams}
-
-        for row in grp.itertuples(
-            index=False
-        ):  # grp is already sorted by play_id, play_sequence
-            pid = int(row.player_id)
-            t = team_map[(eid, pid)]  # TRAP 1: never row.team_id
-
-            if row.play_event == "Substitution":
-                if row.sequence == SUB_IN:
-                    subbed_in[t].add(pid)
-                elif row.sequence == SUB_OUT and pid not in subbed_in[t]:
-                    openers[t].add(pid)  # left before arriving -> was a starter
-            else:
-                if (
-                    row.play_detail == TECHNICAL
-                ):  # TRAP 2 (3.4c): techs can come from the bench
-                    continue
-                if pid not in subbed_in[t]:
-                    openers[t].add(
-                        pid
-                    )  # did something before arriving -> was a starter
-
-        for t in teams:
-            result[(eid, per, t)] = openers[t]
-
+    home = pbp[["event_id", "home_team_id"]].drop_duplicates()
+    out = long.merge(home, on="event_id")
+    out["is_home"] = (out.team_id == out.home_team_id).astype(int)
+    result = out[OUT_COLS].sort_values(OUT_COLS[:4]).reset_index(drop=True)
     return result
 
 
 # %%
+
+
+def walk_plays(
+    pbp: pd.DataFrame, openers: pd.DataFrame, subs: pd.DataFrame
+) -> pd.DataFrame:
+    """One row per play per on-court player"""
+
+    plays = (
+        pbp[["event_id", "play_id", "period"]]
+        .drop_duplicates()
+        .sort_values(["event_id", "play_id"])
+    )
+
+    rows = []
+    for (eid, per, team), five in openers.groupby(["event_id", "period", "team_id"]):
+        on_court = set(five.player_id)
+        team_subs = subs[
+            (subs.event_id == eid) & (subs.period == per) & (subs.team_id == team)
+        ].set_index("play_id")
+        period_plays = plays[(plays.event_id == eid) & (plays.period == per)]
+
+        for play in period_plays.itertuples(index=False):
+            if play.play_id in team_subs.index:
+                on_court.remove(team_subs.at[play.play_id, "player_out"])
+                on_court.add(team_subs.at[play.play_id, "player_in"])
+
+            rows.extend((eid, play.play_id, p, team, per) for p in on_court)
+
+    long = pd.DataFrame(rows, columns=OUT_COLS[:-1])
+    return add_is_home(long, pbp)
+
+
+# %%
+def validate(on_court: pd.DataFrame, pbp: pd.DataFrame, ros: pd.DataFrame) -> None:
+    """Sanity checks on the output table"""
+
+    for eid, g in pbp.groupby("event_id"):
+        missing = set(g.play_id) - set(
+            on_court.loc[on_court.event_id == eid, "play_id"]
+        )
+        assert not missing, f"game {eid} missing play_ids {sorted(missing)[:5]}"
+
+    per_play = on_court.groupby(["event_id", "play_id"]).size()
+    assert (per_play == 2 * PLAYERS_PER_TEAM).all(), "not 10 players on every play"
+
+    per_team = on_court.groupby(["event_id", "play_id", "team_id"]).size()
+    assert (per_team == PLAYERS_PER_TEAM).all(), "not 5 per team on every play"
+
+    on_roster = on_court.merge(
+        ros[["event_id", "player_id"]], how="left", indicator=True
+    )
+    assert (on_roster._merge == "both").all(), "player not on roster"
+
+    dupes = on_court.duplicated(["event_id", "play_id", "player_id"]).sum()
+    assert dupes == 0, f"{dupes} duplicate rows"
+
+    print(
+        f"validate passed: {len(on_court)} rows, {len(per_play)} plays, {on_court.event_id.nunique()} games"
+    )
+
+
+# %%
+DDL = """
+CREATE TABLE IF NOT EXISTS pbp_players_on_court (
+  event_id   INT        NOT NULL,
+  play_id    INT        NOT NULL,
+  player_id  INT        NOT NULL,
+  team_id    INT        NOT NULL,
+  period     TINYINT    NOT NULL,
+  is_home    TINYINT(1) NOT NULL,
+  updated_at TIMESTAMP  NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (event_id, play_id, player_id),
+  KEY ix_player (event_id, player_id),
+  KEY ix_team   (event_id, team_id, play_id)
+)
+"""
+
+
+# %%
+DDL_PBP = """
+CREATE TABLE IF NOT EXISTS pbp (
+  season           SMALLINT     NOT NULL,
+  date             DATE         NOT NULL,
+  event_id         INT          NOT NULL,
+  home_team_id     INT          NOT NULL,
+  home_team_abbr   VARCHAR(5)   NOT NULL,
+  away_team_id     INT          NOT NULL,
+  away_team_abbr   VARCHAR(5)   NOT NULL,
+  play_id          INT          NOT NULL,
+  play_sequence    TINYINT      NOT NULL,
+  period           TINYINT      NOT NULL,
+  clock_minutes    TINYINT      NOT NULL,
+  clock_seconds    TINYINT      NOT NULL,
+  sec_left         SMALLINT     NOT NULL,
+  play_team_id     INT          NOT NULL,
+  points_scored    TINYINT          NULL,
+  play_event_id    TINYINT      NOT NULL,
+  play_event       VARCHAR(40)      NULL,
+  play_detail_id   SMALLINT         NULL,
+  play_detail      VARCHAR(60)      NULL,
+  is_blocked       TINYINT(1)   NOT NULL,
+  distance         TINYINT      NOT NULL,
+  is_fast_break    TINYINT(1)       NULL,
+  is_in_the_paint  TINYINT(1)       NULL,
+  is_off_turnover  TINYINT(1)       NULL,
+  is_second_chance TINYINT(1)       NULL,
+  away_score       SMALLINT     NOT NULL,
+  home_score       SMALLINT     NOT NULL,
+  away_fouls       TINYINT      NOT NULL,
+  home_fouls       TINYINT      NOT NULL,
+  play_text        VARCHAR(255) NOT NULL,
+  PRIMARY KEY (event_id, play_id, play_sequence),
+  KEY ix_pbp_team (event_id, play_team_id, play_id)
+)
+"""
+
+# %%
+DDL_PBP_PLAYERS = """
+CREATE TABLE IF NOT EXISTS pbp_players (
+  season           SMALLINT     NOT NULL,
+  date             DATE         NOT NULL,
+  event_id         INT          NOT NULL,
+  home_team_id     INT          NOT NULL,
+  home_team_abbr   VARCHAR(5)   NOT NULL,
+  away_team_id     INT          NOT NULL,
+  away_team_abbr   VARCHAR(5)   NOT NULL,
+  play_id          INT          NOT NULL,
+  play_sequence    TINYINT      NOT NULL,
+  period           TINYINT      NOT NULL,
+  clock_minutes    TINYINT      NOT NULL,
+  clock_seconds    TINYINT      NOT NULL,
+  player_id        INT          NOT NULL,
+  first_name       VARCHAR(40)  NOT NULL,
+  last_name        VARCHAR(40)  NOT NULL,
+  team_id          INT          NOT NULL,
+  team_abbr        VARCHAR(5)   NOT NULL,
+  score            TINYINT          NULL,
+  fouls            TINYINT          NULL,
+  sequence         TINYINT      NOT NULL,
+  position_id      TINYINT          NULL,
+  position_abbr    VARCHAR(2)       NULL,
+  points_scored    TINYINT          NULL,
+  play_event_id    TINYINT      NOT NULL,
+  play_event       VARCHAR(40)      NULL,
+  play_detail_id   SMALLINT         NULL,
+  play_detail      VARCHAR(60)      NULL,
+  is_blocked       TINYINT(1)   NOT NULL,
+  distance         TINYINT      NOT NULL,
+  is_fast_break    TINYINT(1)       NULL,
+  is_in_the_paint  TINYINT(1)       NULL,
+  is_off_turnover  TINYINT(1)       NULL,
+  is_second_chance TINYINT(1)       NULL,
+  away_score       SMALLINT     NOT NULL,
+  home_score       SMALLINT     NOT NULL,
+  away_fouls       TINYINT      NOT NULL,
+  home_fouls       TINYINT      NOT NULL,
+  play_text        VARCHAR(255) NOT NULL,
+  PRIMARY KEY (event_id, play_id, play_sequence, player_id),
+  KEY ix_pbpp_player (event_id, player_id, play_id),
+  KEY ix_pbpp_event  (event_id, play_event)
+);
+"""
+
+# %%
+DDL_ROSTERS = """
+CREATE TABLE IF NOT EXISTS rosters (
+  season           SMALLINT     NOT NULL,
+  date             DATE         NOT NULL,
+  event_id         INT          NOT NULL,
+  team_id          INT          NOT NULL,
+  team_abbr        VARCHAR(5)   NOT NULL,
+  opp_id           INT          NOT NULL,
+  opp_abbr         VARCHAR(5)   NOT NULL,
+  home             TINYINT(1)   NOT NULL,
+  primary_pos_id   TINYINT      NOT NULL,
+  primary_pos_abbr VARCHAR(2)   NOT NULL,
+  player_id        INT          NOT NULL,
+  name             VARCHAR(60)  NOT NULL,
+  PRIMARY KEY (event_id, player_id),
+  KEY ix_ros_team (event_id, team_id)
+);
+"""
+
+
+# %%
+def get_conn():
+    """Connection from .env"""
+
+    conn = mysql.connector.connect(
+        host=os.environ["MYSQL_HOST"],
+        port=int(os.environ["MYSQL_PORT"]),
+        user=os.environ["MYSQL_USER"],
+        password=os.environ["MYSQL_PASSWORD"],
+        database=os.environ["MYSQL_DATABASE"],
+    )
+    return conn
+
+
+def write_table(
+    df: pd.DataFrame, table: str, ddl: str, conn, key: str = "event_id"
+) -> int:
+    """Create table if needed, then delete and reinsert by game"""
+
+    cols = ", ".join(df.columns)
+    marks = ", ".join(["%s"] * len(df.columns))
+    insert_sql = f"INSERT INTO {table} ({cols}) VALUES ({marks})"
+
+    clean = df.astype(object).where(df.notna(), None)
+    with conn.cursor() as cur:
+        cur.execute(ddl)
+        for eid, game in clean.groupby(key):
+            cur.execute(f"DELETE FROM {table} WHERE {key} = %s", (int(eid),))
+            cur.executemany(insert_sql, game.to_numpy().tolist())
+    conn.commit()
+    return len(df)
+
+
+# %%
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description="Derive the 10 players on court for every play."
+    )
+    ap.add_argument("--game", required=True, help='an event_id, or "all"')
+    ap.add_argument(
+        "--validate", action="store_true", help="run integrity checks before writing"
+    )
+    ap.add_argument(
+        "--no-db", action="store_true", help="build and validate only; skip MySQL"
+    )
+    ap.add_argument(
+        "--load-source",
+        action="store_true",
+        help="also load pbp / pbp_players / rosters (for validation.sql)",
+    )
+    args = ap.parse_args()
+
+    pbp, pbpp, ros = load(DATA_DIR)
+    if args.game != "all":
+        eid = int(args.game)
+        if eid not in set(pbp.event_id):
+            print(f"error: event_id {eid} not found in pbp", file=sys.stderr)
+            return 1
+        pbp, pbpp, ros = (
+            pbp[pbp.event_id == eid],
+            pbpp[pbpp.event_id == eid],
+            ros[ros.event_id == eid],
+        )
+
+    pbpp = attach_roster_team(pbpp, ros)
+    openers = period_openers(pbpp)
+    subs = sub_events(pbpp)
+    on_court = walk_plays(pbp, openers, subs)
+
+    if args.validate:
+        validate(on_court, pbp, ros)
+    if not args.no_db:
+        with get_conn() as conn:
+            n = write_table(on_court[OUT_COLS], "pbp_players_on_court", DDL, conn)
+            if args.load_source:
+                write_table(pbp, "pbp", DDL_PBP, conn)
+                write_table(pbpp, "pbp_players", DDL_PBP_PLAYERS, conn)
+                write_table(ros, "rosters", DDL_ROSTERS, conn)
+        print(f"wrote {n} rows for {on_court.event_id.nunique()} game(s)")
+    return 0
+
+
+# %%
+if __name__ == "__main__":
+    sys.exit(main())
