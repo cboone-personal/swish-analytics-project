@@ -76,8 +76,14 @@ walk_plays(pbp, openers, subs)   VERSION 2 (Chris's call): loop per (game, perio
                        apply sub on its own play row; extend 5 rows per play; add_is_home at the end
                        -> DataFrame (9930 x 6). No dicts, no prev_period. (docs/phase4-options.md: 3 others)
 validate()             5 asserts: coverage, 10/play, 5/team/play, on roster, no dupes
-get_conn() / write_mysql()   per game DELETE -> executemany INSERT, one commit, rollback on error
-main()                 argparse --game {id|all} --validate --no-db
+get_conn() / write_table(df, table, ddl, conn, key="event_id")   GENERIC: builds INSERT from df.columns,
+                       NaN->None via astype(object).where(notna, None), per-game DELETE -> executemany,
+                       one commit. Same function loads pbp_players_on_court AND pbp / pbp_players / rosters
+                       (DDLs in docs/source-table-ddl.md). No write_mysql, no INSERT_SQL.
+query(sql)             notebook helper: pd.read_sql over get_conn()
+sql/validation.sql     Q1 pts_for/pts_against per player; Q2 reconciliation on_court_pts == 5 * team_pts
+                       (verified: diff 0 for all 4 team-games; team_pts = final scores 92-88, 142-116)
+main()                 argparse --game {id|all} --validate --no-db --load-source
 ```
 
 **No dict-lookup functions, no per-period special cases.** `player_team_map()`,
