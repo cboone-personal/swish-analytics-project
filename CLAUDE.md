@@ -54,21 +54,45 @@ ingest → trigger → compute → storage → serving. Scaling.
 - **Zero substitution events between periods.** Q2/Q3/Q4 openers must be
   back-solved from within-period evidence.
 
-## The algorithm (approved design)
+## The algorithm (approved design, revised 2026-09-06 for notebook dev)
 
 ```
-load()            xlsx -> pbp, pbp_players, rosters
-player_team_map() {(event_id, player_id): team_id}       # from ROSTERS only
-period_openers()  {(event_id, period, team_id): set(5)}  # P1 from play_id=1; P2+ back-solved
-walk_plays()      {(event_id, play_id): set(10)}         # ordered pass, apply subs
-to_long()         DataFrame: event_id, play_id, player_id, team_id, period, is_home
-validate()        assertions + points-on-court report
-write_mysql()     per game: DELETE event_id -> executemany INSERT, one txn
+load()                 xlsx -> pbp, pbp_players, rosters (ids cast int, NaN-player rows dropped, sorted)
+attach_roster_team()   pbpp.team_id := roster team_id via join            # Trap 1 fixed once, up front
+period_openers()       DataFrame[event_id, period, team_id, player_id], 80 rows. HYBRID (Chris's call):
+                         starters = pbpp rows at play_id == 1                          # Q1: explicit, trusted
+                         evidence = pbpp[(period >= 2) & (play_detail != TECHNICAL)]  # Q2+: inferred
+                         first_row = evidence.drop_duplicates(subset=OPENER_COLS, keep="first")
+                         inferred  = first_row unless it's a Substitution with sequence == SUB_IN
+                         openers   = concat(starters, inferred)
+                       Principle: use the feed's explicit lineup where it exists, infer only where it
+                       doesn't. (One-rule-all-periods also works — 3.4 self-test — but he prefers explicit.)
+                       (docs/phase3-options.md: two equivalent inference variants — two-mins, per-group scan)
+openers_wide()         notebook-only view: one row per (game, team), Q1..Q4 columns of "name (id)"
+sub_events()           pivot subs -> one row per sub: event_id, play_id, PERIOD, team_id, player_in, player_out (104)
+add_is_home()          long frame + pbp -> merge home_team_id, is_home = (team_id == home_team_id)
+walk_plays(pbp, openers, subs)   VERSION 2 (Chris's call): loop per (game, period, team) via
+                       openers.groupby; on_court = one set; team_subs / period_plays by boolean filter;
+                       apply sub on its own play row; extend 5 rows per play; add_is_home at the end
+                       -> DataFrame (9930 x 6). No dicts, no prev_period. (docs/phase4-options.md: 3 others)
+validate()             5 asserts: coverage, 10/play, 5/team/play, on roster, no dupes
+get_conn() / write_mysql()   per game DELETE -> executemany INSERT, one commit, rollback on error
+main()                 argparse --game {id|all} --validate --no-db
 ```
 
-Back-solve rule for period P opener: player is in the opening 5 if, scanning
-plays in order within P, he is (a) subbed OUT before being subbed IN, or
-(b) appears in any non-substitution event before being subbed IN.
+**No dict-lookup functions, no per-period special cases.** `player_team_map()`,
+`home_team_map()`, `game_teams()`, the original single-loop `period_openers()`, and
+the `starting_five()` / `inferred_openers()` split were all deleted (2026-09-06).
+Chris found them confusing and each turned out unnecessary. Don't reintroduce
+them. Frames in, frames out; join instead of lookup; one rule for all periods;
+the only loop is the Phase 4 walk.
+
+Chris develops in `on_court.ipynb` (define cell + run cell per function), then
+exports to `on_court.py` in Phase 5.3 and adds `main()`.
+
+Back-solve rule for period P opener: drop technicals; take each player's first
+row in the period; he opened the period unless that first row is him being
+subbed IN.
 
 **Two mandatory exclusions — without them 2 of 16 lineups come out to 6:**
 
@@ -127,7 +151,15 @@ python on_court.py --game all --validate
 pytest -q
 ```
 
-## Style notes (fill in as Chris's style emerges)
+## Style notes (observed in on_court.py / on_court.ipynb, 2026-09-06)
 
-- (tbd — observe first file, record conventions here: naming, docstrings,
-  type hints y/n, f-strings, logging vs print, etc.)
+- Black-formatted (88 cols, trailing commas, one-item-per-line lists when long).
+- Type hints on function signatures (`pd.DataFrame`, `dict[tuple[int, int], int]`).
+- One-line docstring per function describing the return shape.
+- Names the result before returning it (`ptm = ...; return ptm`), not `return <expr>`.
+- Pandas method chains for filtering/grouping; comprehensions over `itertuples()` for dicts.
+- Constants in UPPER_SNAKE at top: `SUB_IN`, `SUB_OUT`, `STARTING_LINEUP_PLAY_ID`, `TECHNICAL`.
+- `print()` not logging. f-strings.
+- Wants each notebook cell to end in a displayable expression (a frame or a count), and
+  an explicit "you should see" for every run cell. Hates vague pseudocode.
+- Layout: `on_court.ipynb` is the dev surface; `on_court.py` is the deliverable, exported at the end.
