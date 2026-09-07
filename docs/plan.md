@@ -861,38 +861,18 @@ Defer until the functions live in `on_court.py` (Phase 5.3).
 
 ## Phase 5 — MySQL write, script, dump, your own analysis (≈2 hrs) [→ R4–R8, T1]
 
-### 5.1 — `get_conn()` + `write_mysql()` [→ R4, R5, R7]
+### 5.1 — `get_conn()` + `write_table()` [→ R4, R5, R7]
 
-- [ ] **Do (a):** `get_conn()` — `mysql.connector.connect(...)` with `host, port, user, password, database` all from `os.environ` (names from `.env.example`). `int()` the port.
-- [ ] **Do (b):** `DDL` string — the `CREATE TABLE IF NOT EXISTS` from `CLAUDE.md`, verbatim. `INSERT_SQL` string with six `%s`.
-- [ ] **Do (c):** `write_mysql(on_court, conn) -> int`. Cursor. Execute DDL. **Per game:** `DELETE ... WHERE event_id = %s`, then `executemany(INSERT_SQL, rows)` where `rows` is a list of tuples of **Python `int`s**. One `commit()` at the end. `try/except → rollback(); raise`. Return rows written.
-**Why:** Delete-then-insert per game = a rerun makes the table *equal* the source, orphans included (an upsert wouldn't). One commit = all-or-nothing. That's R5.
+One generic writer handles every table — the deliverable and the three source tables you'll need for the validation SQL.
 
-**Gotcha you will hit:** `TypeError: Failed processing format-parameters; Python 'int64' cannot be converted to a MySQL type`. numpy ints. Convert each value with `int()`.
+- [ ] **Do (a) — `get_conn()`.** `mysql.connector.connect(...)` with `host, port, user, password, database` from `os.environ` (names in `.env.example`). `int()` the port. Nothing hard-coded → R7.
+- [ ] **Do (b) — DDL strings.** Four module-level strings: `DDL` for `pbp_players_on_court` (the schema in `CLAUDE.md`, verbatim — indexes included), and `DDL_PBP`, `DDL_PBP_PLAYERS`, `DDL_ROSTERS` from `docs/source-table-ddl.md`. Column names must match the frames exactly.
+- [ ] **Do (c) — `write_table(df, table, ddl, conn, key="event_id")`.** Build the `INSERT` from `df.columns`. Convert `NaN → None` and numpy scalars → Python with `df.astype(object).where(df.notna(), None)`. Then, in one cursor: execute the DDL; **per game** `DELETE … WHERE key = %s` then `executemany`. One `commit()`. Return `len(df)`.
+**Why:** Delete-then-insert per game = a rerun makes the table *equal* the source, orphans included (an upsert wouldn't). One commit = all-or-nothing per call. mysql-connector runs non-autocommit, so a failure before `commit()` leaves the table untouched — that's R5 in one sentence for the writeup. Building the `INSERT` from the columns is what lets one function load all four tables.
 
 <details><summary>Skeleton</summary>
 
 ```python
-DDL = """
-CREATE TABLE IF NOT EXISTS pbp_players_on_court (
-  event_id   INT        NOT NULL,
-  play_id    INT        NOT NULL,
-  player_id  INT        NOT NULL,
-  team_id    INT        NOT NULL,
-  period     TINYINT    NOT NULL,
-  is_home    TINYINT(1) NOT NULL,
-  updated_at TIMESTAMP  NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (event_id, play_id, player_id),
-  KEY ix_player (event_id, player_id),
-  KEY ix_team   (event_id, team_id, play_id)
-)
-"""
-INSERT_SQL = """
-INSERT INTO pbp_players_on_court (event_id, play_id, player_id, team_id, period, is_home)
-VALUES (%s, %s, %s, %s, %s, %s)
-"""
-
-
 def get_conn():
     """MySQL connection from .env — nothing hard-coded."""
 
@@ -906,54 +886,65 @@ def get_conn():
     return conn
 
 
-def write_mysql(on_court: pd.DataFrame, conn) -> int:
-    """Replace each game's rows atomically. Returns rows written."""
+def write_table(df: pd.DataFrame, table: str, ddl: str, conn, key: str = "event_id") -> int:
+    """Create `table` if needed, then replace each game's rows. Returns rows written."""
 
-    cur = conn.cursor()
-    try:
-        cur.execute(DDL)
-        written = 0
-        for eid, g in on_court.groupby("event_id"):
-            cur.execute("DELETE FROM pbp_players_on_court WHERE event_id = %s", (int(eid),))
-            rows = [tuple(int(v) for v in r) for r in g[OUT_COLS].itertuples(index=False, name=None)]
-            cur.executemany(INSERT_SQL, rows)
-            written += len(rows)
-        conn.commit()
-        return written
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        cur.close()
+    cols = ", ".join(df.columns)
+    marks = ", ".join(["%s"] * len(df.columns))
+    insert_sql = f"INSERT INTO {table} ({cols}) VALUES ({marks})"
+
+    clean = df.astype(object).where(df.notna(), None)  # NaN -> NULL, numpy scalars -> Python
+    with conn.cursor() as cur:
+        cur.execute(ddl)
+        for eid, game in clean.groupby(key):
+            cur.execute(f"DELETE FROM {table} WHERE {key} = %s", (int(eid),))
+            cur.executemany(insert_sql, game.to_numpy().tolist())
+    conn.commit()
+    return len(df)
 ```
+
+`ndarray.tolist()` returns native Python types, which is what fixes the connector's "Python 'int64' cannot be converted to a MySQL type" error. `with conn.cursor()` closes the cursor; the caller's `with get_conn() as conn:` closes the connection — including on failure, which discards the uncommitted transaction.
 
 </details>
 
 - [ ] **Run cell** (Docker up — `docker compose ps` says healthy):
 
 ```python
-conn = get_conn()
-n = write_mysql(on_court, conn)
-conn.close()
-n
+with get_conn() as conn:
+    print("pbp_players_on_court", write_table(on_court[OUT_COLS], "pbp_players_on_court", DDL, conn))
+    print("pbp                 ", write_table(pbp, "pbp", DDL_PBP, conn))
+    print("pbp_players         ", write_table(pbpp, "pbp_players", DDL_PBP_PLAYERS, conn))
+    print("rosters             ", write_table(ros, "rosters", DDL_ROSTERS, conn))
 ```
 
-**You should see:** `9930`. Then in the terminal:
+**You should see:** `9930`, `1011`, `1284`, `66`.
 
-```bash
-docker exec -it swish-mysql mysql -u swish -p swish -e "SELECT event_id, COUNT(*) FROM pbp_players_on_court GROUP BY event_id;"
+- [ ] **Run it again.** Same four numbers. Then confirm nothing doubled:
+
+```python
+def query(sql: str) -> pd.DataFrame:
+    """Run a query against the docker MySQL, return a DataFrame."""
+
+    with get_conn() as conn:
+        result = pd.read_sql(sql, conn)
+    return result
+
+
+query("SELECT 'on_court' t, COUNT(*) n FROM pbp_players_on_court UNION ALL SELECT 'pbp', COUNT(*) FROM pbp")
 ```
 
-→ `1947160 | 4890`, `1947312 | 5040`.
+**You should see:** `9930` and `1011` — not `19860` / `2022`. **That's R5.** Paste both outputs into the walkthrough.
 
-- [ ] **Run the cell again.** Still `9930`, and the SQL counts don't double. **That's R5.** Screenshot or paste both outputs — they go in the walkthrough.
+`pd.read_sql` prints a `UserWarning` about SQLAlchemy — harmless. Silence once in setup: `warnings.filterwarnings("ignore", message="pandas only supports SQLAlchemy")`.
 
 <details><summary>If not</summary>
 
 - `InterfaceError: 2003 Can't connect` → Docker isn't up, or `.env` port ≠ compose port. `docker compose ps`.
-- `ProgrammingError: 1045 Access denied` → `.env` password ≠ what the container was *created* with. If you changed `.env` after first `up`, `docker compose down -v` then `up -d` (wipes the volume — fine, the script rebuilds everything).
-- `TypeError ... int64` → the `int(v)` conversion is missing.
-- `KeyError: 'MYSQL_HOST'` → `load_dotenv()` didn't find `.env`. Notebook cwd is the repo root (check `os.getcwd()`); `.env` must be there.
+- `ProgrammingError: 1045 Access denied` → `.env` password ≠ what the container was *created* with. If you changed `.env` after first `up`: `docker compose down -v` then `up -d` (wipes the volume; the script rebuilds everything).
+- `ProgrammingError: 1054 Unknown column 'x'` → a frame column isn't in that table's DDL, or is spelled differently. Compare `df.columns` to the DDL.
+- `DataError: 1264 Out of range` → a `TINYINT`/`SMALLINT` is too small for a value in a new game. Widen the type in the DDL, `DROP TABLE`, rerun.
+- `TypeError ... nan can not be used with MySQL` → the `.where(df.notna(), None)` step is missing.
+- `KeyError: 'MYSQL_HOST'` → `load_dotenv()` didn't find `.env`. Notebook cwd must be the repo root (`os.getcwd()`).
 
 </details>
 
@@ -961,14 +952,90 @@ docker exec -it swish-mysql mysql -u swish -p swish -e "SELECT event_id, COUNT(*
 
 ### 5.2 — `sql/validation.sql`: points while on court [→ T1 — their tip]
 
-- [ ] **Do (a) — get `pbp` into MySQL so you can join.** In the notebook, one throwaway cell using the same pattern as `write_mysql`: `CREATE TABLE IF NOT EXISTS pbp (event_id INT, play_id INT, play_sequence INT, period TINYINT, play_team_id INT, points_scored INT NULL, play_event VARCHAR(40), play_text TEXT, PRIMARY KEY (event_id, play_id, play_sequence))`, `DELETE`, `executemany`. `points_scored` has NaN → convert to `None` (`int(v) if pd.notna(v) else None`). This is a dev convenience; say so in the walkthrough.
-- [ ] **Do (b) — write the two queries** into `sql/validation.sql`:
-  1. **Per player:** join `pbp_players_on_court oc` ⟂ `pbp p` on `(event_id, play_id)`; `SUM(CASE WHEN p.play_team_id = oc.team_id THEN p.points_scored ELSE 0 END) AS pts_for`, same with `<>` for `pts_against`, `COUNT(DISTINCT p.play_id) AS plays`; group by `event_id, team_id, player_id`.
-  2. **Reconciliation:** per `(event_id, team_id)`, `SUM(pts_for)` from query 1 must equal **5 ×** the team's `SUM(points_scored)` in `pbp`. Show both and the difference.
-**Why:** The PDF's one tip. Query 2 is a proof — five players share every point, so if any lineup is wrong the 5× identity breaks.
-- [ ] **Run** with SQLTools (`Ctrl+E Ctrl+E` on the file) or `docker exec -it swish-mysql mysql -u swish -p swish < sql/validation.sql` from Git Bash.
+The PDF's one tip: *"summing up the total team points scored while each player was on court … try doing your own calculations on the new data set."* Two queries. The first is the analysis; the second proves the table is right.
 
-**You should see:** difference `0` for all four team-games. Paste the table into the walkthrough.
+**Why the join works:** `pbp` has one row per play with `play_team_id` (who scored) and `points_scored`. `pbp_players_on_court` has ten rows per play. Join on `(event_id, play_id)` and every point gets attached to the ten players on the floor — five for, five against.
+
+- [ ] **Do (a) — Query 1, per player.** Join `pbp_players_on_court oc` to `pbp p` on `(event_id, play_id)`. For each `(event_id, team_id, player_id)`: `pts_for` = sum of `points_scored` where `p.play_team_id = oc.team_id`; `pts_against` = where it isn't; `plays` = `COUNT(DISTINCT p.play_id)`. Order by `pts_for` desc.
+- [ ] **Do (b) — Query 2, reconciliation.** Every point a team scores lands on exactly five of its players, so `SUM(pts_for)` across a team's players must equal **5 ×** the team's total in `pbp`. Per `(event_id, team_id)`: `on_court_pts` from query 1 vs `5 * SUM(points_scored)` from `pbp` where `play_team_id = team_id`, and the difference.
+- [ ] **Do (c) — save both to `sql/validation.sql`**, then run them from the notebook with `query(...)`.
+
+<details><summary>Skeleton</summary>
+
+```sql
+-- Query 1: team points scored for / against while each player was on court
+SELECT
+  oc.event_id,
+  oc.team_id,
+  oc.player_id,
+  r.name,
+  SUM(CASE WHEN p.play_team_id =  oc.team_id THEN p.points_scored ELSE 0 END) AS pts_for,
+  SUM(CASE WHEN p.play_team_id <> oc.team_id THEN p.points_scored ELSE 0 END) AS pts_against,
+  COUNT(DISTINCT p.play_id)                                                 AS plays
+FROM pbp_players_on_court oc
+JOIN pbp     p ON p.event_id = oc.event_id AND p.play_id = oc.play_id
+JOIN rosters r ON r.event_id = oc.event_id AND r.player_id = oc.player_id
+GROUP BY oc.event_id, oc.team_id, oc.player_id, r.name
+ORDER BY pts_for DESC;
+```
+
+```sql
+-- Query 2: reconciliation — on-court points must be exactly 5x the team's total
+WITH on_court_pts AS (
+  SELECT oc.event_id, oc.team_id,
+         SUM(CASE WHEN p.play_team_id = oc.team_id THEN p.points_scored ELSE 0 END) AS on_court_pts
+  FROM pbp_players_on_court oc
+  JOIN pbp p ON p.event_id = oc.event_id AND p.play_id = oc.play_id
+  GROUP BY oc.event_id, oc.team_id
+),
+team_pts AS (
+  SELECT event_id, play_team_id AS team_id, SUM(points_scored) AS team_pts
+  FROM pbp
+  GROUP BY event_id, play_team_id
+)
+SELECT o.event_id, o.team_id, t.team_pts, 5 * t.team_pts AS expected, o.on_court_pts,
+       o.on_court_pts - 5 * t.team_pts AS diff
+FROM on_court_pts o
+JOIN team_pts t ON t.event_id = o.event_id AND t.team_id = o.team_id
+ORDER BY o.event_id, o.team_id;
+```
+
+`points_scored` is `NULL` on non-scoring plays; `SUM` ignores `NULL`, and the `CASE … ELSE 0` keeps the arithmetic clean.
+
+</details>
+
+- [ ] **Run cell:**
+
+```python
+query(open("sql/validation.sql").read().split(";")[0])      # query 1
+```
+```python
+query(open("sql/validation.sql").read().split(";")[1])      # query 2
+```
+
+(`split(";")` is fine here because neither query has a semicolon inside it. If you'd rather not depend on that, keep the two queries in two files.)
+
+**You should see, query 2:**
+
+| event_id | team_id | team_pts | expected | on_court_pts | diff |
+|---|---|---|---|---|---|
+| 1947160 | 2 | 92 | 460 | 460 | 0 |
+| 1947160 | 9 | 88 | 440 | 440 | 0 |
+| 1947312 | 10 | 142 | 710 | 710 | 0 |
+| 1947312 | 21 | 116 | 580 | 580 | 0 |
+
+`team_pts` matches the final scores in `pbp` (BOS 92–88 GS; HOU 142–116 PHO). **Query 1** tops out with Trevor Ariza `pts_for = 111`, James Harden `108`, Ryan Anderson `95` — all Houston, all in the 142-point game.
+
+**Paste query 2 into the walkthrough.** It's a one-table proof that every lineup has exactly five players from the scoring team on every scoring play.
+
+<details><summary>If not</summary>
+
+- `diff ≠ 0` for a team → a lineup somewhere has the wrong count for that team on a scoring play. `validate()` should have caught it; if `validate` passes and this doesn't, the `pbp` table is stale — rerun 5.1's write cell.
+- `Unknown table 'pbp'` → 5.1's write cell hasn't run.
+- `team_pts` ≠ final score → `points_scored` loaded as `0` instead of `NULL`, or `pbp` has duplicate rows (PK would have rejected them — so probably the former). Check `query("SELECT COUNT(*) FROM pbp WHERE points_scored IS NULL")` → 770.
+- Query 1 rows ≠ 40-ish (players who saw the floor) → `rosters` join dropped someone; `query("SELECT COUNT(*) FROM rosters")` → 66.
+
+</details>
 
 ---
 
@@ -977,7 +1044,7 @@ docker exec -it swish-mysql mysql -u swish -p swish -e "SELECT event_id, COUNT(*
 The deliverable is a script. Do this once, now that everything works.
 
 - [ ] **Do (a):** In VS Code, notebook toolbar → `...` → **Export** → **Python Script**. Save over `on_court.py`. Then clean it: delete the run cells (anything that's not an `import`, a constant, a function, or the DDL/INSERT strings), delete the `# %%` comments if you like, keep the function order.
-- [ ] **Do (b):** Add `main()` at the bottom — `argparse` with `--game` (required, `"all"` or an event_id), `--validate`, `--no-db`. Load → filter to one game if asked (all three frames; error cleanly if the id isn't in `pbp`) → `attach_roster_team` → `openers` → `subs` → `walk_plays` → `validate` if asked → `write_mysql` unless `--no-db` → print one summary line. `if __name__ == "__main__": sys.exit(main())`.
+- [ ] **Do (b):** Add `main()` at the bottom — `argparse` with `--game` (required, `"all"` or an event_id), `--validate`, `--no-db`, `--load-source`. Load → filter to one game if asked (all three frames; error cleanly if the id isn't in `pbp`) → `attach_roster_team` → `openers` → `subs` → `walk_plays` → `validate` if asked → `write_table` for `pbp_players_on_court` unless `--no-db`; the three source tables too if `--load-source` → print one summary line. `if __name__ == "__main__": sys.exit(main())`.
 
 <details><summary>Skeleton</summary>
 
@@ -987,6 +1054,7 @@ def main() -> int:
     ap.add_argument("--game", required=True, help='an event_id, or "all"')
     ap.add_argument("--validate", action="store_true", help="run integrity checks before writing")
     ap.add_argument("--no-db", action="store_true", help="build and validate only; skip MySQL")
+    ap.add_argument("--load-source", action="store_true", help="also load pbp / pbp_players / rosters (for validation.sql)")
     args = ap.parse_args()
 
     pbp, pbpp, ros = load(DATA_DIR)
@@ -1005,11 +1073,12 @@ def main() -> int:
     if args.validate:
         validate(on_court, pbp, ros)
     if not args.no_db:
-        conn = get_conn()
-        try:
-            n = write_mysql(on_court, conn)
-        finally:
-            conn.close()
+        with get_conn() as conn:
+            n = write_table(on_court[OUT_COLS], "pbp_players_on_court", DDL, conn)
+            if args.load_source:
+                write_table(pbp, "pbp", DDL_PBP, conn)
+                write_table(pbpp, "pbp_players", DDL_PBP_PLAYERS, conn)
+                write_table(ros, "rosters", DDL_ROSTERS, conn)
         print(f"wrote {n} rows for {on_court.event_id.nunique()} game(s)")
     return 0
 
