@@ -1118,23 +1118,29 @@ python on_court.py --game all --no-db --validate
 
 ### 5.4 — The dump deliverable [→ R8]
 
-Dump inside the container, copy the file out — avoids PowerShell's redirect-encoding problem:
+Dump inside the container, copy the file out — avoids PowerShell's redirect-encoding problem. **Single quotes** on the outer string: PowerShell leaves `$` alone inside them, so `sh` in the container expands `$MYSQL_ROOT_PASSWORD` (with double quotes PowerShell hands over a literal `\$` and MySQL says `Access denied`):
 
 ```bash
-docker exec swish-mysql sh -c "mysqldump -u root -p\$MYSQL_ROOT_PASSWORD swish pbp_players_on_court --result-file=/tmp/dump.sql"
+docker exec swish-mysql sh -c 'mysqldump -u root -p"$MYSQL_ROOT_PASSWORD" swish pbp_players_on_court --result-file=/tmp/dump.sql'
 ```
 ```bash
 docker cp swish-mysql:/tmp/dump.sql sql/pbp_players_on_court.sql
 ```
 
 - [ ] Open it: one `CREATE TABLE`, a few big `INSERT INTO ... VALUES (...),(...)` statements, ~400–600 KB.
-- [ ] **Prove it restores:** `docker exec -it swish-mysql mysql -u root -p -e "CREATE DATABASE swish_check;"`, then
+- [ ] **Prove it restores.** PowerShell strips inner double quotes from native-command arguments, so `mysql -e "..."` breaks; pipe the SQL in on stdin instead (`docker exec -i` lets stdin through):
 
 ```bash
-docker exec swish-mysql sh -c "mysql -u root -p\$MYSQL_ROOT_PASSWORD swish_check < /tmp/dump.sql"
+"CREATE DATABASE swish_check" | docker exec -i swish-mysql sh -c 'mysql -u root -p"$MYSQL_ROOT_PASSWORD"'
+```
+```bash
+docker exec swish-mysql sh -c 'mysql -u root -p"$MYSQL_ROOT_PASSWORD" swish_check < /tmp/dump.sql'
+```
+```bash
+"SELECT COUNT(*) FROM swish_check.pbp_players_on_court; DROP DATABASE swish_check" | docker exec -i swish-mysql sh -c 'mysql -u root -p"$MYSQL_ROOT_PASSWORD"'
 ```
 
-then `SELECT COUNT(*) FROM swish_check.pbp_players_on_court;` → `9930`. `DROP DATABASE swish_check;`.
+→ `9930`. The `[Warning] Using a password on the command line` lines are expected.
 
 **✅ Done when:** the five terminal runs behave as listed, the dump restores to 9930, and the reconciliation difference is 0.
 
