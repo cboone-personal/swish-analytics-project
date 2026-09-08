@@ -4,8 +4,8 @@ Types and nullability are from profiling the actual files (2026-09-06). These ar
 dev-convenience tables so `sql/validation.sql` can join to `pbp`; they are not the
 deliverable table. Write them into your notebook / `sql/` yourself.
 
-Conventions matching `pbp_players_on_court`: `INT` for ids, `TINYINT` for small
-ranges, `TINYINT(1)` for 0/1 flags, `NULL` only where the file actually has blanks,
+Conventions matching `pbp_players_on_court`: `INT` for every integer column,
+`NULL` only where the file actually has blanks,
 backticks on `date` (MySQL keyword).
 
 ## pbp — one row per play (1,011 rows; `play_id 1` is 10 rows)
@@ -20,27 +20,27 @@ CREATE TABLE IF NOT EXISTS pbp (
   away_team_id     INT          NOT NULL,
   away_team_abbr   VARCHAR(5)   NOT NULL,
   play_id          INT          NOT NULL,
-  play_sequence    TINYINT      NOT NULL,
-  period           TINYINT      NOT NULL,
-  clock_minutes    TINYINT      NOT NULL,
-  clock_seconds    TINYINT      NOT NULL,
+  play_sequence    INT          NOT NULL,
+  period           INT          NOT NULL,
+  clock_minutes    INT          NOT NULL,
+  clock_seconds    INT          NOT NULL,
   sec_left         SMALLINT     NOT NULL,
   play_team_id     INT          NOT NULL,
-  points_scored    TINYINT          NULL,   -- NULL on non-scoring plays (770 of 1011)
-  play_event_id    TINYINT      NOT NULL,
+  points_scored    INT              NULL,   -- NULL on non-scoring plays (770 of 1011)
+  play_event_id    INT          NOT NULL,
   play_event       VARCHAR(40)      NULL,   -- NULL on the 20 Starting Lineup rows
   play_detail_id   SMALLINT         NULL,
   play_detail      VARCHAR(60)      NULL,
-  is_blocked       TINYINT(1)   NOT NULL,
-  distance         TINYINT      NOT NULL,
-  is_fast_break    TINYINT(1)       NULL,   -- NULL on Starting Lineup rows
-  is_in_the_paint  TINYINT(1)       NULL,
-  is_off_turnover  TINYINT(1)       NULL,
-  is_second_chance TINYINT(1)       NULL,
+  is_blocked       INT          NOT NULL,
+  distance         INT          NOT NULL,
+  is_fast_break    INT              NULL,   -- NULL on Starting Lineup rows
+  is_in_the_paint  INT              NULL,
+  is_off_turnover  INT              NULL,
+  is_second_chance INT              NULL,
   away_score       SMALLINT     NOT NULL,
   home_score       SMALLINT     NOT NULL,
-  away_fouls       TINYINT      NOT NULL,
-  home_fouls       TINYINT      NOT NULL,
+  away_fouls       INT          NOT NULL,
+  home_fouls       INT          NOT NULL,
   play_text        VARCHAR(255) NOT NULL,
   PRIMARY KEY (event_id, play_id, play_sequence),
   KEY ix_pbp_team (event_id, play_team_id, play_id)
@@ -63,35 +63,35 @@ CREATE TABLE IF NOT EXISTS pbp_players (
   away_team_id     INT          NOT NULL,
   away_team_abbr   VARCHAR(5)   NOT NULL,
   play_id          INT          NOT NULL,
-  play_sequence    TINYINT      NOT NULL,
-  period           TINYINT      NOT NULL,
-  clock_minutes    TINYINT      NOT NULL,
-  clock_seconds    TINYINT      NOT NULL,
+  play_sequence    INT          NOT NULL,
+  period           INT          NOT NULL,
+  clock_minutes    INT          NOT NULL,
+  clock_seconds    INT          NOT NULL,
   player_id        INT          NOT NULL,
   first_name       VARCHAR(40)  NOT NULL,
   last_name        VARCHAR(40)  NOT NULL,
   team_id          INT          NOT NULL,   -- roster team, not the feed's
   team_abbr        VARCHAR(5)   NOT NULL,   -- feed's; wrong on play 149 (Booker) — keep for the writeup
-  score            TINYINT          NULL,   -- player's running points; NULL on 346 rows
-  fouls            TINYINT          NULL,
-  sequence         TINYINT      NOT NULL,   -- role in the play: sub 1=in 2=out; foul 1=committer 3=fouled; etc.
-  position_id      TINYINT          NULL,   -- only on Starting Lineup rows
+  score            INT              NULL,   -- player's running points; NULL on 346 rows
+  fouls            INT              NULL,
+  sequence         INT          NOT NULL,   -- role in the play: sub 1=in 2=out; foul 1=committer 3=fouled; etc.
+  position_id      INT              NULL,   -- only on Starting Lineup rows
   position_abbr    VARCHAR(2)       NULL,
-  points_scored    TINYINT          NULL,
-  play_event_id    TINYINT      NOT NULL,
+  points_scored    INT              NULL,
+  play_event_id    INT          NOT NULL,
   play_event       VARCHAR(40)      NULL,
   play_detail_id   SMALLINT         NULL,
   play_detail      VARCHAR(60)      NULL,
-  is_blocked       TINYINT(1)   NOT NULL,
-  distance         TINYINT      NOT NULL,
-  is_fast_break    TINYINT(1)       NULL,
-  is_in_the_paint  TINYINT(1)       NULL,
-  is_off_turnover  TINYINT(1)       NULL,
-  is_second_chance TINYINT(1)       NULL,
+  is_blocked       INT          NOT NULL,
+  distance         INT          NOT NULL,
+  is_fast_break    INT              NULL,
+  is_in_the_paint  INT              NULL,
+  is_off_turnover  INT              NULL,
+  is_second_chance INT              NULL,
   away_score       SMALLINT     NOT NULL,
   home_score       SMALLINT     NOT NULL,
-  away_fouls       TINYINT      NOT NULL,
-  home_fouls       TINYINT      NOT NULL,
+  away_fouls       INT          NOT NULL,
+  home_fouls       INT          NOT NULL,
   play_text        VARCHAR(255) NOT NULL,
   PRIMARY KEY (event_id, play_id, play_sequence, player_id),
   KEY ix_pbpp_player (event_id, player_id, play_id),
@@ -112,8 +112,8 @@ CREATE TABLE IF NOT EXISTS rosters (
   team_abbr        VARCHAR(5)   NOT NULL,
   opp_id           INT          NOT NULL,
   opp_abbr         VARCHAR(5)   NOT NULL,
-  home             TINYINT(1)   NOT NULL,
-  primary_pos_id   TINYINT      NOT NULL,
+  home             INT          NOT NULL,
+  primary_pos_id   INT          NOT NULL,
   primary_pos_abbr VARCHAR(2)   NOT NULL,
   player_id        INT          NOT NULL,
   name             VARCHAR(60)  NOT NULL,
