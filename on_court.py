@@ -216,7 +216,7 @@ CREATE TABLE IF NOT EXISTS pbp_players_on_court (
 # %%
 DDL_PBP = """
 CREATE TABLE IF NOT EXISTS pbp (
-  season           SMALLINT     NOT NULL,
+  season           INT          NOT NULL,
   date             DATE         NOT NULL,
   event_id         INT          NOT NULL,
   home_team_id     INT          NOT NULL,
@@ -228,12 +228,12 @@ CREATE TABLE IF NOT EXISTS pbp (
   period           INT          NOT NULL,
   clock_minutes    INT          NOT NULL,
   clock_seconds    INT          NOT NULL,
-  sec_left         SMALLINT     NOT NULL,
+  sec_left         INT          NOT NULL,
   play_team_id     INT          NOT NULL,
   points_scored    INT              NULL,
   play_event_id    INT          NOT NULL,
   play_event       VARCHAR(40)      NULL,
-  play_detail_id   SMALLINT         NULL,
+  play_detail_id   INT              NULL,
   play_detail      VARCHAR(60)      NULL,
   is_blocked       INT          NOT NULL,
   distance         INT          NOT NULL,
@@ -241,8 +241,8 @@ CREATE TABLE IF NOT EXISTS pbp (
   is_in_the_paint  INT              NULL,
   is_off_turnover  INT              NULL,
   is_second_chance INT              NULL,
-  away_score       SMALLINT     NOT NULL,
-  home_score       SMALLINT     NOT NULL,
+  away_score       INT          NOT NULL,
+  home_score       INT          NOT NULL,
   away_fouls       INT          NOT NULL,
   home_fouls       INT          NOT NULL,
   play_text        VARCHAR(255) NOT NULL,
@@ -254,7 +254,7 @@ CREATE TABLE IF NOT EXISTS pbp (
 # %%
 DDL_PBP_PLAYERS = """
 CREATE TABLE IF NOT EXISTS pbp_players (
-  season           SMALLINT     NOT NULL,
+  season           INT          NOT NULL,
   date             DATE         NOT NULL,
   event_id         INT          NOT NULL,
   home_team_id     INT          NOT NULL,
@@ -279,7 +279,7 @@ CREATE TABLE IF NOT EXISTS pbp_players (
   points_scored    INT              NULL,
   play_event_id    INT          NOT NULL,
   play_event       VARCHAR(40)      NULL,
-  play_detail_id   SMALLINT         NULL,
+  play_detail_id   INT              NULL,
   play_detail      VARCHAR(60)      NULL,
   is_blocked       INT          NOT NULL,
   distance         INT          NOT NULL,
@@ -287,8 +287,8 @@ CREATE TABLE IF NOT EXISTS pbp_players (
   is_in_the_paint  INT              NULL,
   is_off_turnover  INT              NULL,
   is_second_chance INT              NULL,
-  away_score       SMALLINT     NOT NULL,
-  home_score       SMALLINT     NOT NULL,
+  away_score       INT          NOT NULL,
+  home_score       INT          NOT NULL,
   away_fouls       INT          NOT NULL,
   home_fouls       INT          NOT NULL,
   play_text        VARCHAR(255) NOT NULL,
@@ -301,7 +301,7 @@ CREATE TABLE IF NOT EXISTS pbp_players (
 # %%
 DDL_ROSTERS = """
 CREATE TABLE IF NOT EXISTS rosters (
-  season           SMALLINT     NOT NULL,
+  season           INT          NOT NULL,
   date             DATE         NOT NULL,
   event_id         INT          NOT NULL,
   team_id          INT          NOT NULL,

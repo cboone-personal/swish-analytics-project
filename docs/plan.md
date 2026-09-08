@@ -942,7 +942,7 @@ query("SELECT 'on_court' t, COUNT(*) n FROM pbp_players_on_court UNION ALL SELEC
 - `InterfaceError: 2003 Can't connect` → Docker isn't up, or `.env` port ≠ compose port. `docker compose ps`.
 - `ProgrammingError: 1045 Access denied` → `.env` password ≠ what the container was *created* with. If you changed `.env` after first `up`: `docker compose down -v` then `up -d` (wipes the volume; the script rebuilds everything).
 - `ProgrammingError: 1054 Unknown column 'x'` → a frame column isn't in that table's DDL, or is spelled differently. Compare `df.columns` to the DDL.
-- `DataError: 1264 Out of range` → a `INT`/`SMALLINT` is too small for a value in a new game. Widen the type in the DDL, `DROP TABLE`, rerun.
+- `DataError: 1264 Out of range` → a `INT`/`INT` is too small for a value in a new game. Widen the type in the DDL, `DROP TABLE`, rerun.
 - `TypeError ... nan can not be used with MySQL` → the `.where(df.notna(), None)` step is missing.
 - `KeyError: 'MYSQL_HOST'` → `load_dotenv()` didn't find `.env`. Notebook cwd must be the repo root (`os.getcwd()`).
 
