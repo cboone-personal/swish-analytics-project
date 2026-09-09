@@ -55,7 +55,7 @@ python on_court.py --game all --validate
 
 ## Why the code is built this way
 
-Everything is in one file. The script is about 400 lines and a quarter of that is SQL for the table definitions, so splitting it into modules would only make a reviewer hunt for the code.
+Everything is in one file. The script is about 400 lines and a quarter of that is SQL for the table definitions, so there is not much to gain from splitting it into modules.
 
 I built this in a Jupyter notebook one function at a time, running each one and looking at what came back before writing the next. Keeping them independent meant I could rerun a single step without rerunning everything before it. `on_court.py` is that notebook exported with a `main` function added at the end.
 
@@ -160,3 +160,4 @@ Output is ten rows per play, 9,930 for two games.
 - Substitution direction is read from `sequence`. I checked it against `play_text` for these games but the code does not parse the text.
 - Overtime uses the same rule as Q2 to Q4 but there is no overtime in this data to test it on.
 - The 5x reconciliation confirms the join and the play counts. Any five players would satisfy it, so it cannot confirm the right five are on the floor.
+- `sub_events` keeps one incoming and one outgoing player per play. If a feed ever recorded two substitutions for the same team on the same `play_id`, the second pair would be dropped and `validate` would not catch it, since the count would still be five.

@@ -4,7 +4,7 @@
 
 ## Assumptions
 
-I have the script from Part 1 and a play-by-play REST API. Everything else here is something I would build.
+I have the script from Part 1 and a play-by-play REST API from a data provider. Everything else here is something I would build.
 
 I am assuming the provider also exposes a schedule endpoint and rosters, since the script needs rosters and something has to tell the system which games exist. Plays show up in the API within a few seconds of happening. On a busy night there are about a dozen games running at once.
 
@@ -12,7 +12,7 @@ I am assuming the provider also exposes a schedule endpoint and rosters, since t
 
 A daily job reads the schedule and knows which games are on. When a game tips off, a poller starts calling the play-by-play endpoint for that game every 20 seconds and writes every response to object storage exactly as it came back. Each new batch of plays puts a message on a queue. A worker picks up the message, runs the script for that one game, and writes to MySQL.
 
-Nothing is transformed before it lands. The raw responses are kept, so if I find a bug in the period-opener logic next month I can rebuild the whole season from what I already have. Refetching would not work anyway, since providers correct plays after the fact and the API would likely hand back something different than what I originally computed from.
+The raw responses are stored exactly as they came back and kept. If I find a bug in the period-opener logic next month I can rebuild the whole season from what I already have. Refetching would not work anyway, since providers correct plays after the fact and the API would likely hand back something different than what I originally computed from.
 
 ## Triggering
 
@@ -26,11 +26,11 @@ The alternative was a cron that recomputes everything every few minutes. That bu
 
 The job runs for one game. It reads that game's raw plays, runs the same functions as `--game <event_id>`, and writes the result.
 
-Running this live has a wrinkle. The period-opener rule needs a player to show up in a period before it knows he was on the floor. Three minutes into a quarter I might have evidence for three of the five, so the lineup is not settled until enough plays have happened.
+The period-opener rule needs a player to show up in a period before it knows he was on the floor. Three minutes into a quarter I might have evidence for three of the five, so the lineup is not settled until enough plays have happened.
 
 The job reruns the whole game every time new plays land. The write deletes that game's rows and reinserts them, so a rerun just replaces what was there. A lineup that only had three players resolved at 9:00 gets the other two once they touch the ball. A game is 500 plays and takes about a second.
 
-`validate` runs before the write. If a period does not resolve to five players the job fails and the previous version of the game stays in the table. That check doubles as the pipeline's health signal. A game that keeps failing validation is a game where something changed in the feed.
+`validate` runs before the write. If a period does not resolve to five players the job fails and the previous version of the game stays in the table. Repeated failures on one game usually mean the feed changed, so that is what I would alert on.
 
 ## Storage and serving
 

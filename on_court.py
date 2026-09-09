@@ -158,7 +158,13 @@ def walk_plays(
 
         for play in period_plays.itertuples(index=False):
             if play.play_id in team_subs.index:
-                on_court.remove(team_subs.at[play.play_id, "player_out"])
+                out_id = team_subs.at[play.play_id, "player_out"]
+                if out_id not in on_court:
+                    raise ValueError(
+                        f"game {eid} period {per} team {team} play {play.play_id}: "
+                        f"player {out_id} subbed out but was not on court"
+                    )
+                on_court.remove(out_id)
                 on_court.add(team_subs.at[play.play_id, "player_in"])
 
             rows.extend((eid, play.play_id, p, team, per) for p in on_court)
@@ -295,7 +301,7 @@ CREATE TABLE IF NOT EXISTS pbp_players (
   PRIMARY KEY (event_id, play_id, play_sequence, player_id),
   KEY ix_pbpp_player (event_id, player_id, play_id),
   KEY ix_pbpp_event  (event_id, play_event)
-);
+)
 """
 
 # %%
@@ -315,7 +321,7 @@ CREATE TABLE IF NOT EXISTS rosters (
   name             VARCHAR(60)  NOT NULL,
   PRIMARY KEY (event_id, player_id),
   KEY ix_ros_team (event_id, team_id)
-);
+)
 """
 
 
@@ -367,13 +373,20 @@ def main() -> int:
     ap.add_argument(
         "--load-source",
         action="store_true",
-        help="also load pbp / pbp_players / rosters (for validation.sql)",
+        help="also load pbp / pbp_players / rosters (for the queries in sql/)",
     )
     args = ap.parse_args()
 
     pbp, pbpp, ros = load(DATA_DIR)
     if args.game != "all":
-        eid = int(args.game)
+        try:
+            eid = int(args.game)
+        except ValueError:
+            print(
+                f'error: --game must be an event_id or "all", got {args.game!r}',
+                file=sys.stderr,
+            )
+            return 1
         if eid not in set(pbp.event_id):
             print(f"error: event_id {eid} not found in pbp", file=sys.stderr)
             return 1

@@ -1,4 +1,4 @@
--- Query 2: reconciliation — on-court points must be exactly 5x the team's total
+-- Query 2: reconciliation. On-court points must be exactly 5x the team's total.
 WITH on_court_pts AS (
   SELECT oc.event_id, oc.team_id,
          SUM(CASE WHEN p.play_team_id = oc.team_id THEN p.points_scored ELSE 0 END) AS on_court_pts

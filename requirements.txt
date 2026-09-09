@@ -3,6 +3,5 @@ openpyxl>=3.1
 mysql-connector-python>=9.0
 python-dotenv>=1.0
 
-# dev only
-pytest>=8.0
+# for the notebook this was developed in
 ipykernel>=6.29
